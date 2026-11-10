@@ -620,6 +620,9 @@ struct mpegts_service
 
   int      s_dvb_subscription_flags;
   int      s_dvb_subscription_weight;
+#if ENABLE_DVBBUFFER
+  int      s_dvbbuffer_used;    /* counted as mux use for the LRU (global_lock) */
+#endif
 
   mpegts_apids_t             *s_pids;
   idnode_set_t                s_masters;
