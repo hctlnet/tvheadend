@@ -543,6 +543,7 @@ SRCS-DVBBUFFER = \
 	src/dvbbuffer/mux.c \
 	src/dvbbuffer/warm.c \
 	src/dvbbuffer/start.c \
+	src/dvbbuffer/tsstart.c \
 	src/dvbbuffer/ring.c
 SRCS-$(CONFIG_DVBBUFFER) += $(SRCS-DVBBUFFER)
 I18N-C += $(SRCS-DVBBUFFER)
