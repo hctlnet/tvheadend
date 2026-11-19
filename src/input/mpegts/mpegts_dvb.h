@@ -137,6 +137,8 @@ dvb_mux_t *dvb_mux_submux_parent ( dvb_mux_t *sm );
 void       dvb_mux_submux_link   ( dvb_mux_t *sm, const dvb_mux_t *parent );
 int        dvb_mux_submux_sync   ( dvb_mux_t *sm );
 void       dvb_network_link_multistream ( dvb_network_t *ln );
+/* one more input stream of the transponder of lm; NULL: *err says why */
+dvb_mux_t *dvb_mux_add_stream ( dvb_mux_t *lm, int stream, const char **err );
 dvb_mux_t *dvb_mux_multistream_transponder ( dvb_network_t *ln, const dvb_mux_t *lm );
 /* a multistream transponder no tuner takes as a whole: scanned by its streams */
 int        dvb_mux_transponder_by_streams ( mpegts_mux_t *mm );

@@ -1432,6 +1432,7 @@ dvb_mux_delete ( mpegts_mux_t *mm, int delconf )
 {
   char ubuf1[UUID_HEX_SIZE];
   char ubuf2[UUID_HEX_SIZE];
+  dvb_mux_t *t = NULL;
 
   /* Remove config */
   if (delconf)
@@ -1451,8 +1452,21 @@ dvb_mux_delete ( mpegts_mux_t *mm, int delconf )
       sub->mm_delete(sub, delconf);
   }
 
+  /* the transponder of an input stream that goes for good */
+  if (delconf && mm->mm_type == MM_TYPE_ISI)
+    t = dvb_mux_submux_parent((dvb_mux_t *)mm);
+
   /* Delete the mux (the strings stay for its last save, see dvb_mux_free) */
   mpegts_mux_delete(mm, delconf);
+
+  /* its last input stream is gone: a mux like any other again, which a
+   * tuner takes (also for an input stream added by mistake) */
+  if (t && t->lm_multistream && dvb_mux_first_submux(t) == NULL) {
+    t->lm_multistream = 0;
+    idnode_changed(&t->mm_id);
+    tvhinfo(LS_MPEGTS, "%s: no input streams left, not a multistream transponder any more",
+            t->mm_nicename);
+  }
 }
 
 static void
@@ -1681,6 +1695,93 @@ dvb_mux_multistream_transponder ( dvb_network_t *ln, const dvb_mux_t *lm )
     idnode_changed(&t->mm_id);
   }
   return t;
+}
+
+/*
+ * One more input stream of a transponder: only its number is new, the tuning
+ * is the transponder's. lm is the mux of the transponder, or one of its
+ * input streams; a mux with a stream of its own (a single stream set by
+ * hand) becomes the first input stream of its transponder, which is made.
+ * A mux of that stream that is there and not linked is taken. The new mux is
+ * queued for its first scan. (global_lock)
+ */
+dvb_mux_t *
+dvb_mux_add_stream ( dvb_mux_t *lm, int stream, const char **err )
+{
+  mpegts_mux_t *mm = (mpegts_mux_t *)lm, *m;
+  dvb_network_t *ln = (dvb_network_t *)mm->mm_network;
+  dvb_mux_t *t, *sm = NULL;
+  dvb_mux_conf_t dmc;
+
+  if (lm->lm_tuning.dmc_fe_type != DVB_TYPE_S ||
+      lm->lm_tuning.dmc_fe_delsys != DVB_SYS_DVBS2) {
+    *err = "only a DVB-S2 mux has input streams";
+    return NULL;
+  }
+  if (stream < 0 || stream > 255) {
+    *err = "an input stream has a number from 0 to 255";
+    return NULL;
+  }
+
+  /* the transponder */
+  if (mpegts_mux_is_submux(mm)) {
+    t = dvb_mux_submux_parent(lm);
+  } else if (lm->lm_tuning.dmc_fe_stream_id == DVB_NO_STREAM_ID_FILTER) {
+    t = lm;
+  } else if (lm->lm_tuning.dmc_fe_stream_id == stream) {
+    *err = "the mux is this input stream";
+    return NULL;
+  } else if ((t = dvb_mux_multistream_transponder(ln, lm)) != NULL) {
+    mm->mm_type = MM_TYPE_ISI;
+    dvb_mux_submux_link(lm, t);
+    mpegts_mux_update_nice_name(mm);
+    idnode_changed(&mm->mm_id);
+  }
+  if (t == NULL) {
+    *err = "the transponder of the mux is not found";
+    return NULL;
+  }
+
+  /* there already, or there as a mux of its own */
+  LIST_FOREACH(m, &ln->mn_muxes, mm_network_link) {
+    dvb_mux_t *l = (dvb_mux_t *)m;
+    if (l == t || l->lm_tuning.dmc_fe_stream_id != stream ||
+        !dvb_mux_same_frequency(&l->lm_tuning, &t->lm_tuning))
+      continue;
+    if (m->mm_type == MM_TYPE_ISI && dvb_mux_submux_parent(l) == t) {
+      *err = "the transponder has this input stream";
+      return NULL;
+    }
+    if (m->mm_type == MM_TYPE_TS && sm == NULL)
+      sm = l;
+  }
+
+  if (!t->lm_multistream) {
+    t->lm_multistream = 1;
+    idnode_changed(&t->mm_id);
+  }
+  if (sm == NULL) {
+    memcpy(&dmc, &t->lm_tuning, sizeof(dmc));
+    dmc.dmc_fe_stream_id = stream;
+    sm = dvb_mux_create0(ln, MPEGTS_ONID_NONE, MPEGTS_TSID_NONE, &dmc, NULL, NULL);
+    if (sm == NULL) {
+      *err = "the mux could not be made";
+      return NULL;
+    }
+    ((mpegts_mux_t *)sm)->mm_type = MM_TYPE_ISI;
+    dvb_mux_submux_link(sm, t);
+    mpegts_mux_update_nice_name((mpegts_mux_t *)sm);
+    mpegts_mux_post_create((mpegts_mux_t *)sm);
+  } else {
+    ((mpegts_mux_t *)sm)->mm_type = MM_TYPE_ISI;
+    dvb_mux_submux_link(sm, t);
+    dvb_mux_submux_sync(sm);
+    mpegts_mux_update_nice_name((mpegts_mux_t *)sm);
+  }
+  idnode_changed(&sm->mm_id);
+  tvhinfo(LS_MPEGTS, "%s: input stream %d of the transponder %s added", sm->mm_nicename,
+          stream, t->mm_nicename);
+  return sm;
 }
 
 /*

@@ -166,6 +166,52 @@ api_mpegts_network_scan
   return 0;
 }
 
+/*
+ * One more input stream of a multistream transponder: uuid (the mux of the
+ * transponder, or one of its input streams), stream_id. Answers with the
+ * uuid of the mux of the stream.
+ */
+static int
+api_mpegts_mux_add_stream
+  ( access_t *perm, void *opaque, const char *op, htsmsg_t *args, htsmsg_t **resp )
+{
+#if ENABLE_MPEGTS_DVB
+  const char *uuid, *err = NULL;
+  mpegts_mux_t *mm;
+  dvb_mux_t *sm = NULL;
+  char ubuf[UUID_HEX_SIZE];
+  int64_t stream;
+  int r = 0;
+
+  if (!(uuid = htsmsg_get_str(args, "uuid")) ||
+      htsmsg_get_s64(args, "stream_id", &stream))
+    return EINVAL;
+  tvh_mutex_lock(&global_lock);
+  mm = mpegts_mux_find(uuid);
+  if (mm == NULL)
+    r = ENOENT;
+  else if (!idnode_is_instance(&mm->mm_id, &dvb_mux_class))
+    err = "not a DVB mux";
+  else if (stream < 0 || stream > 255)
+    err = "an input stream has a number from 0 to 255";
+  else
+    sm = dvb_mux_add_stream((dvb_mux_t *)mm, (int)stream, &err);
+  *resp = htsmsg_create_map();
+  if (sm)
+    htsmsg_add_str(*resp, "uuid", idnode_uuid_as_str(&sm->mm_id, ubuf));
+  else if (err)
+    htsmsg_add_str(*resp, "error", err);
+  tvh_mutex_unlock(&global_lock);
+  if (r) {
+    htsmsg_destroy(*resp);
+    *resp = NULL;
+  }
+  return r;
+#else
+  return ENOSYS;
+#endif
+}
+
 static int
 api_mpegts_network_muxclass
   ( access_t *perm, void *opaque, const char *op, htsmsg_t *args, htsmsg_t **resp )
@@ -423,6 +469,7 @@ api_mpegts_init ( void )
     { "mpegts/network/scan",       ACCESS_ADMIN, api_mpegts_network_scan, NULL },
     { "mpegts/mux/grid",           ACCESS_ADMIN, api_idnode_grid,  api_mpegts_mux_grid },
     { "mpegts/mux/class",          ACCESS_ADMIN, api_idnode_class, (void*)&mpegts_mux_class },
+    { "mpegts/mux/add_stream",     ACCESS_ADMIN, api_mpegts_mux_add_stream, NULL },
     { "mpegts/service/grid",       ACCESS_ADMIN, api_idnode_grid,  api_mpegts_service_grid },
     { "mpegts/service/class",      ACCESS_ADMIN, api_idnode_class, (void*)&mpegts_service_class },
     { "mpegts/mux_sched/class",    ACCESS_ADMIN, api_idnode_class, (void*)&mpegts_mux_sched_class },
