@@ -31,6 +31,11 @@ stubs.resetEachTest()
 const { captured } = stubs
 
 describe('DvbServicesView columns', () => {
+  it('shows the type of the services', () => {
+    mount(DvbServicesView)
+    expect(stubs.gridColumn('type')?.hiddenByDefault).toBeFalsy()
+  })
+
   it('shows EIT processing, not the removed dvb_ignore_eit field', () => {
     mount(DvbServicesView)
     const fields = stubs.gridColumns().map((c) => c.field)
