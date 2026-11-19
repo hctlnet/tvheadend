@@ -16,6 +16,8 @@ vi.mock('@/api/client', () => stubs.apiClient)
 vi.mock('@/components/IdnodeEditor.vue', () => stubs.idnodeEditor)
 vi.mock('@/components/IdnodePickEntityDialog.vue', () => stubs.emptyComponent)
 vi.mock('vue-router', () => stubs.vueRouter)
+vi.mock('@/composables/useConfirmDialog', () => stubs.confirmDialog)
+vi.mock('@/composables/useToastNotify', () => stubs.toastNotify)
 
 import DvbMuxTreeView from '../DvbMuxTreeView.vue'
 
@@ -595,5 +597,75 @@ describe('DvbMuxTreeView editor', () => {
     picker.vm.$emit('pick', 'n2', 'IPTV Automatic Network')
     await flushPromises()
     expect(editor(w).attrs['parent-scoped']).toMatchObject({ params: { uuid: 'n2' } })
+  })
+})
+
+describe('DvbMuxTreeView selection', () => {
+  const pick = (w: Wrapper, text: string, opts: Record<string, boolean> = {}) =>
+    rowOf(w, text).trigger('click', opts)
+  const selectedTexts = (w: Wrapper) =>
+    w.findAll('tr.mux-tree__row--selected').map((tr) => tr.text().replace(/\s+/g, ' ').trim())
+
+  async function mountBothOpen(s: FakeServer = server()) {
+    const w = await mountTree(s)
+    await expand(w, 'Astra (1)')
+    await expand(w, 'IPTV Automatic Network')
+    return w
+  }
+
+  it('selects one row by a click, more with Ctrl, all shown with the box in the header', async () => {
+    const w = await mountBothOpen()
+    await pick(w, '11494H')
+    await pick(w, 'Channel One')
+    expect(selectedTexts(w)).toHaveLength(1)
+    await pick(w, '11494H', { ctrlKey: true })
+    expect(selectedTexts(w)).toHaveLength(2)
+    expect(w.find('.mux-tree__count').text()).toContain('2 selected')
+    await w.find('thead input[type="checkbox"]').trigger('change')
+    expect(selectedTexts(w)).toHaveLength(0)
+  })
+
+  it('selects a Shift range from the row clicked, after rows above it opened', async () => {
+    const w = await mountTree()
+    await expand(w, 'IPTV Automatic Network')
+    await pick(w, 'Channel One')
+    /* opening Astra moves the rows below it */
+    await expand(w, 'Astra (1)')
+    await pick(w, '11494H', { shiftKey: true })
+    const sel = selectedTexts(w)
+    expect(sel.some((r) => r.includes('Channel One'))).toBe(true)
+    expect(sel.some((r) => r.includes('11494H'))).toBe(true)
+  })
+
+  it('edits several of a kind at once, not a mux and a service together', async () => {
+    const w = await mountBothOpen()
+    await expand(w, '11494H')
+    await pick(w, '11494H')
+    await pick(w, 'Channel One', { ctrlKey: true })
+    await button(w, 'Edit').trigger('click')
+    expect(stubs.captured.editor.uuids).toEqual(['m1', 'i1'])
+    await pick(w, 'Das Erste HD', { ctrlKey: true })
+    expect(button(w, 'Edit').attributes('disabled')).toBeDefined()
+  })
+
+  it('deletes the selection and loads its networks again', async () => {
+    const w = await mountBothOpen()
+    await pick(w, '11494H')
+    const before = calls('mpegts/mux/grid').length
+    await button(w, 'Delete').trigger('click')
+    await flushPromises()
+    expect(calls('idnode/delete')).toEqual([{ uuid: '["m1"]' }])
+    expect(calls('mpegts/mux/grid')).toHaveLength(before + 1)
+    expect(selectedTexts(w)).toHaveLength(0)
+  })
+
+  it('says when a delete fails', async () => {
+    const s = server()
+    const w = await mountBothOpen(s)
+    await pick(w, '11494H')
+    s.gate = (ep) => (ep === 'idnode/delete' ? Promise.reject(new Error('in use')) : undefined)
+    await button(w, 'Delete').trigger('click')
+    await flushPromises()
+    expect(stubs.toast.error).toHaveBeenCalledWith('Failed to delete: in use')
   })
 })

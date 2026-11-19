@@ -11,6 +11,11 @@
  * of each mux.
  * A double click opens the editor of the mux, service or network.
  *
+ * Rows are selected by a click (Ctrl/Cmd adds one, Shift a range) or
+ * their check box; the toolbar adds a mux (to the network of the
+ * selection, else one picked), edits the selection (several of a kind at
+ * once) and deletes it.
+ *
  * The filter finds muxes by name, type, provider network and tuning (all
  * networks are loaded for it) and by state (scan failed, disabled); the
  * rows above a match open.
@@ -48,15 +53,19 @@ import {
   ChevronRight,
   List,
   Lock,
+  Pencil,
   Plus,
   RefreshCw,
+  Trash2,
 } from 'lucide-vue-next'
 import IdnodeEditor from '@/components/IdnodeEditor.vue'
 import IdnodePickEntityDialog from '@/components/IdnodePickEntityDialog.vue'
 import SearchInput from '@/components/SearchInput.vue'
 import { apiCall } from '@/api/client'
 import { useAccessStore } from '@/stores/access'
+import { useConfirmDialog } from '@/composables/useConfirmDialog'
 import { useI18n } from '@/composables/useI18n'
+import { useToastNotify } from '@/composables/useToastNotify'
 import { apiErrorMessage } from '@/utils/apiErrorMessage'
 import {
   buildMuxTree,
@@ -89,7 +98,9 @@ import {
 
 const { t } = useI18n()
 const access = useAccessStore()
+const confirmDialog = useConfirmDialog()
 const router = useRouter()
+const toast = useToastNotify()
 
 interface NetworkEntry {
   uuid: string
@@ -566,16 +577,71 @@ const index = computed(() => {
   return map
 })
 
+/* Selection: muxes and services, by uuid */
+const selected = ref(new Set<string>())
+/* the row a Shift click selects from: by uuid, rows above it may have
+ * opened or closed since */
+let anchor: string | null = null
 /* the network of the row clicked last: where Add puts a mux */
 const focusNet = ref<NetworkEntry | null>(null)
 
-function onRowClick(r: FlatRow) {
-  if (r.network) focusNet.value = r.network
-  else if (r.node || r.service) focusNet.value = r.net ?? null
+/* the selection that still exists (a reload may have removed some) */
+const selection = computed(() =>
+  [...selected.value].filter((u) => index.value.has(u)).map((u) => ({ uuid: u, ...(index.value.get(u) as RowEntry) })),
+)
+
+function selectableUuid(r: FlatRow): string | null {
+  return r.service?.uuid ?? r.node?.row.uuid ?? null
 }
 
-/* Editor: edit, create (a mux in a network) */
+function setSelected(next: Set<string>) {
+  selected.value = next
+}
+
+function onRowClick(r: FlatRow, ev: MouseEvent) {
+  if (r.network) {
+    focusNet.value = r.network
+    return
+  }
+  const uuid = selectableUuid(r)
+  if (!uuid) return
+  focusNet.value = r.net ?? null
+  const from = anchor && ev.shiftKey ? visible.value.findIndex((x) => selectableUuid(x) === anchor) : -1
+  if (from >= 0) {
+    const i = visible.value.findIndex((x) => x.key === r.key)
+    const [a, b] = from < i ? [from, i] : [i, from]
+    const next = new Set(ev.ctrlKey || ev.metaKey ? selected.value : [])
+    for (const row of visible.value.slice(a, b + 1)) {
+      const u = selectableUuid(row)
+      if (u) next.add(u)
+    }
+    setSelected(next)
+    return
+  }
+  anchor = uuid
+  if (ev.ctrlKey || ev.metaKey) toggleSelected(uuid)
+  else setSelected(new Set([uuid]))
+}
+
+function toggleSelected(uuid: string) {
+  const next = new Set(selected.value)
+  if (next.has(uuid)) next.delete(uuid)
+  else next.add(uuid)
+  setSelected(next)
+}
+
+const visibleSelectable = computed(() => visible.value.map(selectableUuid).filter((u): u is string => !!u))
+const allSelected = computed(
+  () => visibleSelectable.value.length > 0 && visibleSelectable.value.every((u) => selected.value.has(u)),
+)
+
+function toggleAll() {
+  setSelected(allSelected.value ? new Set() : new Set(visibleSelectable.value))
+}
+
+/* Editor: edit (one or several of a kind), create (a mux in a network) */
 const editingUuid = ref<string | null>(null)
+const editingUuids = ref<string[] | null>(null)
 const editingTitle = ref('')
 const creatingNet = ref<NetworkEntry | null>(null)
 /* the networks that reload when the editor closes */
@@ -597,28 +663,50 @@ function networkOf(row: MuxRow): NetworkEntry | null {
 
 function onRowDblclick(row: FlatRow) {
   if (row.service) {
-    openEdit(row.service.uuid, 'service', row.net ? [row.net] : [])
+    openEdit([row.service.uuid], 'service', row.net ? [row.net] : [])
   } else if (row.network) {
     editingUuid.value = row.network.uuid
     editingTitle.value = t('Edit Network')
     editingNets = []
   } else if (row.node) {
     const net = networkOf(row.node.row)
-    openEdit(row.node.row.uuid, 'mux', net ? [net] : [])
+    openEdit([row.node.row.uuid], 'mux', net ? [net] : [])
   }
 }
 
-function openEdit(uuid: string, kind: RowKind, nets: NetworkEntry[]) {
+function openEdit(uuids: string[], kind: RowKind, nets: NetworkEntry[]) {
   editingNets = nets
-  editingUuid.value = uuid
-  editingTitle.value = kind === 'mux' ? t('Edit Mux') : t('Edit Service')
+  if (uuids.length === 1) {
+    editingUuid.value = uuids[0]
+    editingTitle.value = kind === 'mux' ? t('Edit Mux') : t('Edit Service')
+  } else {
+    editingUuids.value = uuids
+    editingTitle.value = kind === 'mux' ? t('Edit {0} muxes', uuids.length) : t('Edit {0} services', uuids.length)
+  }
 }
 
-/* add: to the network of the row clicked last, else to one picked */
+/* edit: one kind only (a mux and a service have different fields) */
+const canEdit = computed(() => {
+  const kinds = new Set(selection.value.map((x) => x.kind))
+  return kinds.size === 1
+})
+
+function onEdit() {
+  if (!canEdit.value) return
+  const sel = selection.value
+  openEdit(
+    sel.map((x) => x.uuid),
+    sel[0].kind,
+    [...new Set(sel.map((x) => x.net))],
+  )
+}
+
+/* add: to the network of the selection (or the network row clicked),
+ * else to one picked */
 const pickerVisible = ref(false)
 
 function onAdd() {
-  const net = focusNet.value
+  const net = focusNet.value ?? selection.value[0]?.net ?? null
   if (net) openCreate(net)
   else pickerVisible.value = true
 }
@@ -652,6 +740,7 @@ function onCreated(uuid: string) {
 
 function onEditorClose() {
   editingUuid.value = null
+  editingUuids.value = null
   creatingNet.value = null
   if (editingNets.length) {
     for (const net of editingNets) {
@@ -660,6 +749,28 @@ function onEditorClose() {
     }
   } else void loadNetworks()
   editingNets = []
+}
+
+async function onDelete() {
+  const sel = selection.value
+  if (!sel.length) return
+  const muxes = sel.filter((x) => x.kind === 'mux').length
+  const svcs = sel.length - muxes
+  const what = [muxes ? t('{0} mux(es)', muxes) : '', svcs ? t('{0} service(s)', svcs) : '']
+    .filter(Boolean)
+    .join(t(' and '))
+  const ok = await confirmDialog.ask(t('Do you really want to delete {0}?', what), { severity: 'danger' })
+  if (!ok) return
+  try {
+    await apiCall('idnode/delete', { uuid: JSON.stringify(sel.map((x) => x.uuid)) })
+  } catch (e) {
+    toast.error(`${t('Failed to delete')}: ${apiErrorMessage(e)}`)
+  }
+  setSelected(new Set())
+  for (const net of new Set(sel.map((x) => x.net))) {
+    void loadMuxes(net, false)
+    refreshServices(net)
+  }
 }
 
 /* queued or scanning: in place of the result (the idle queue: next to it) */
@@ -710,9 +821,17 @@ onMounted(loadNetworks)
 <template>
   <section class="mux-tree">
     <div class="mux-tree__toolbar">
-      <Button severity="secondary" outlined size="small" :title="t('Add a mux to a network')" @click="onAdd">
+      <Button severity="secondary" outlined size="small" :title="t('Add a mux to the network of the selection')" @click="onAdd">
         <Plus :size="14" :stroke-width="2" />
         {{ t('Add') }}
+      </Button>
+      <Button severity="secondary" outlined size="small" :disabled="!canEdit" @click="onEdit">
+        <Pencil :size="14" :stroke-width="2" />
+        {{ t('Edit') }}
+      </Button>
+      <Button severity="secondary" outlined size="small" :disabled="!selection.length" @click="onDelete">
+        <Trash2 :size="14" :stroke-width="2" />
+        {{ t('Delete') }}
       </Button>
       <span class="mux-tree__sep" />
       <Button severity="secondary" outlined size="small" @click="expandAll">
@@ -737,6 +856,7 @@ onMounted(loadNetworks)
         {{ t('List view') }}
       </Button>
       <span class="mux-tree__count">
+        <template v-if="selection.length">{{ t('{0} selected', selection.length) }} · </template>
         {{ t('{0} networks, {1} muxes loaded', networks.length, muxTotal) }}
       </span>
     </div>
@@ -768,6 +888,7 @@ onMounted(loadNetworks)
     <div class="mux-tree__scroll">
       <table class="mux-tree__table" :aria-label="t('Muxes')">
         <colgroup>
+          <col class="mux-tree__col-select" />
           <col />
           <col class="mux-tree__col-type" />
           <col class="mux-tree__col-sid" />
@@ -777,6 +898,14 @@ onMounted(loadNetworks)
         </colgroup>
         <thead>
           <tr>
+            <th class="mux-tree__select-cell">
+              <input
+                type="checkbox"
+                :checked="allSelected"
+                :aria-label="t('Select all shown')"
+                @change="toggleAll"
+              />
+            </th>
             <th class="mux-tree__name">{{ t('Name') }}</th>
             <th>{{ t('Type') }}</th>
             <th>{{ t('SID') }}</th>
@@ -791,13 +920,24 @@ onMounted(loadNetworks)
             :key="r.key"
             class="mux-tree__row"
             :class="{
+              'mux-tree__row--selected': !!selectableUuid(r) && selected.has(selectableUuid(r) as string),
               'mux-tree__row--network': !!r.network,
               'mux-tree__row--off': (!!r.node && r.node.row.enabled !== 1) || r.service?.enabled === false,
               'mux-tree__row--group': !!r.svcGroup,
             }"
-            @click="onRowClick(r)"
+            @click="onRowClick(r, $event)"
             @dblclick="onRowDblclick(r)"
           >
+            <td class="mux-tree__select-cell">
+              <input
+                v-if="selectableUuid(r)"
+                type="checkbox"
+                :checked="selected.has(selectableUuid(r) as string)"
+                :aria-label="t('Select')"
+                @click.stop="toggleSelected(selectableUuid(r) as string)"
+                @dblclick.stop
+              />
+            </td>
             <!-- network and transponder rows: the name uses the columns before the scan result -->
             <td
               class="mux-tree__name"
@@ -911,6 +1051,7 @@ onMounted(loadNetworks)
   />
   <IdnodeEditor
     :uuid="editingUuid"
+    :uuids="editingUuids"
     :create-base="creatingNet ? 'mpegts/network' : null"
     :parent-scoped="createScope"
     :level="access.uilevel"
@@ -999,6 +1140,19 @@ onMounted(loadNetworks)
 
 .mux-tree__col-count {
   width: 78px;
+}
+
+.mux-tree__col-select {
+  width: 30px;
+}
+
+.mux-tree__select-cell {
+  text-align: center;
+  padding: 0 !important;
+}
+
+.mux-tree__row--selected td {
+  background: color-mix(in srgb, var(--tvh-primary) 14%, transparent);
 }
 
 .mux-tree__streams {
