@@ -9,6 +9,7 @@
  * The muxes as a tree: network → transponder → the sub-muxes carried in
  * it (the input streams of a multistream transponder), and the services
  * of each mux.
+ * A double click opens the editor of the mux, service or network.
  *
  * The filter finds muxes by name, type, provider network and tuning (all
  * networks are loaded for it) and by state (scan failed, disabled); the
@@ -18,7 +19,8 @@
  * The networks come from `mpegts/network/grid` (all of them: the muxes
  * of an IPTV network have no sub-muxes and are a flat list), the muxes
  * of a network from `mpegts/mux/grid` when it is first expanded. The
- * tree is built in `muxTree.ts`. "Reload" loads all again.
+ * tree is built in `muxTree.ts`. "Reload" loads all again, the network
+ * of an edited mux reloads when its editor closes.
  *
  * The flat grid of all muxes is the list view of this tab
  * (DvbMuxesView.vue, route `config-dvb-mux-list`): sortable tuning
@@ -29,7 +31,7 @@
  * channels) - right below it when it has no sub-muxes, else in a
  * "Services (n)" row of their own, collapsed, above the sub-muxes.
  * The services of a network are loaded when the first such row of it is
- * expanded.
+ * expanded, and again after a scan or an edit.
  */
 import {
   computed,
@@ -46,10 +48,14 @@ import {
   ChevronRight,
   List,
   Lock,
+  Plus,
   RefreshCw,
 } from 'lucide-vue-next'
+import IdnodeEditor from '@/components/IdnodeEditor.vue'
+import IdnodePickEntityDialog from '@/components/IdnodePickEntityDialog.vue'
 import SearchInput from '@/components/SearchInput.vue'
 import { apiCall } from '@/api/client'
+import { useAccessStore } from '@/stores/access'
 import { useI18n } from '@/composables/useI18n'
 import { apiErrorMessage } from '@/utils/apiErrorMessage'
 import {
@@ -82,6 +88,7 @@ import {
 } from './muxTree'
 
 const { t } = useI18n()
+const access = useAccessStore()
 const router = useRouter()
 
 interface NetworkEntry {
@@ -265,6 +272,11 @@ async function fetchServices(net: NetworkEntry) {
   } catch (e) {
     setLoadError(`services:${net.uuid}`, e)
   }
+}
+
+/* once loaded, the services follow scans and edits */
+function refreshServices(net: NetworkEntry) {
+  if (services.value[net.uuid]) void loadServices(net)
 }
 
 function serviceTitle(s: ServiceRow): string {
@@ -554,6 +566,102 @@ const index = computed(() => {
   return map
 })
 
+/* the network of the row clicked last: where Add puts a mux */
+const focusNet = ref<NetworkEntry | null>(null)
+
+function onRowClick(r: FlatRow) {
+  if (r.network) focusNet.value = r.network
+  else if (r.node || r.service) focusNet.value = r.net ?? null
+}
+
+/* Editor: edit, create (a mux in a network) */
+const editingUuid = ref<string | null>(null)
+const editingTitle = ref('')
+const creatingNet = ref<NetworkEntry | null>(null)
+/* the networks that reload when the editor closes */
+let editingNets: NetworkEntry[] = []
+
+const createScope = computed(() =>
+  creatingNet.value
+    ? {
+        classEndpoint: 'mpegts/network/mux_class',
+        createEndpoint: 'mpegts/network/mux_create',
+        params: { uuid: creatingNet.value.uuid },
+      }
+    : undefined,
+)
+
+function networkOf(row: MuxRow): NetworkEntry | null {
+  return networks.value.find((n) => n.uuid === row.network_uuid) ?? null
+}
+
+function onRowDblclick(row: FlatRow) {
+  if (row.service) {
+    openEdit(row.service.uuid, 'service', row.net ? [row.net] : [])
+  } else if (row.network) {
+    editingUuid.value = row.network.uuid
+    editingTitle.value = t('Edit Network')
+    editingNets = []
+  } else if (row.node) {
+    const net = networkOf(row.node.row)
+    openEdit(row.node.row.uuid, 'mux', net ? [net] : [])
+  }
+}
+
+function openEdit(uuid: string, kind: RowKind, nets: NetworkEntry[]) {
+  editingNets = nets
+  editingUuid.value = uuid
+  editingTitle.value = kind === 'mux' ? t('Edit Mux') : t('Edit Service')
+}
+
+/* add: to the network of the row clicked last, else to one picked */
+const pickerVisible = ref(false)
+
+function onAdd() {
+  const net = focusNet.value
+  if (net) openCreate(net)
+  else pickerVisible.value = true
+}
+
+function onNetworkPicked(uuid: string, name: string) {
+  pickerVisible.value = false
+  openCreate(
+    networks.value.find((n) => n.uuid === uuid) ?? {
+      uuid,
+      name,
+      serverName: name,
+      numMux: 0,
+      numSvc: 0,
+      numChn: 0,
+    },
+  )
+}
+
+function openCreate(net: NetworkEntry) {
+  creatingNet.value = net
+  editingTitle.value = t('Add Mux to {0}', net.name)
+  editingNets = [net]
+}
+
+/* the new mux is saved: the editor goes on with it */
+function onCreated(uuid: string) {
+  creatingNet.value = null
+  editingUuid.value = uuid
+  editingTitle.value = t('Edit Mux')
+}
+
+function onEditorClose() {
+  editingUuid.value = null
+  creatingNet.value = null
+  if (editingNets.length) {
+    for (const net of editingNets) {
+      void loadMuxes(net, false)
+      refreshServices(net)
+    }
+  } else void loadNetworks()
+  editingNets = []
+}
+
 /* queued or scanning: in place of the result (the idle queue: next to it) */
 function scanStateLabel(row: MuxRow): string {
   if (!scanQueued(row)) return ''
@@ -602,6 +710,11 @@ onMounted(loadNetworks)
 <template>
   <section class="mux-tree">
     <div class="mux-tree__toolbar">
+      <Button severity="secondary" outlined size="small" :title="t('Add a mux to a network')" @click="onAdd">
+        <Plus :size="14" :stroke-width="2" />
+        {{ t('Add') }}
+      </Button>
+      <span class="mux-tree__sep" />
       <Button severity="secondary" outlined size="small" @click="expandAll">
         {{ t('Expand all') }}
       </Button>
@@ -682,6 +795,8 @@ onMounted(loadNetworks)
               'mux-tree__row--off': (!!r.node && r.node.row.enabled !== 1) || r.service?.enabled === false,
               'mux-tree__row--group': !!r.svcGroup,
             }"
+            @click="onRowClick(r)"
+            @dblclick="onRowDblclick(r)"
           >
             <!-- network and transponder rows: the name uses the columns before the scan result -->
             <td
@@ -785,6 +900,24 @@ onMounted(loadNetworks)
       </p>
     </div>
   </section>
+  <IdnodePickEntityDialog
+    :visible="pickerVisible"
+    grid-endpoint="mpegts/network/grid"
+    display-field="networkname"
+    :title="t('Add Mux')"
+    :label="t('Network')"
+    @pick="onNetworkPicked"
+    @close="pickerVisible = false"
+  />
+  <IdnodeEditor
+    :uuid="editingUuid"
+    :create-base="creatingNet ? 'mpegts/network' : null"
+    :parent-scoped="createScope"
+    :level="access.uilevel"
+    :title="editingTitle"
+    @close="onEditorClose"
+    @created="onCreated"
+  />
 </template>
 
 <style scoped>
