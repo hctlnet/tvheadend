@@ -129,12 +129,60 @@ dvb_mux_class_delsys_set (void *o, const void *v)
   return 0;
 }
 
+/*
+ * Mux type: a sub-mux is carried in its transponder
+ */
+static htsmsg_t *
+dvb_mux_class_type_list ( void *o, const char *lang )
+{
+  static const struct strtab tab[] = {
+    { N_("TS"),                       MM_TYPE_TS },
+    { N_("TS (input stream)"),        MM_TYPE_ISI },
+  };
+  (void) o;
+  return strtab2htsmsg(tab, 1, lang);
+}
+
+/* the transponder of a sub-mux: internal, saved for sub-muxes only */
+static uint32_t
+dvb_mux_class_parent_opts ( void *o, uint32_t opts )
+{
+  const mpegts_mux_t *mm = o;
+  if (mm == NULL)
+    return opts | PO_HIDDEN;
+  if (mpegts_mux_is_submux(mm))
+    return opts | PO_NOUI;
+  return opts | PO_NOUI | PO_NOSAVE;
+}
+
 const idclass_t dvb_mux_class =
 {
   .ic_super      = &mpegts_mux_class,
   .ic_class      = "dvb_mux",
   .ic_caption    = N_("DVB multiplex"),
   .ic_properties = (const property_t[]){
+    {
+      .type     = PT_INT,
+      .id       = "tstype",
+      .name     = N_("Type"),
+      .desc     = N_("Transport stream type: TS (standard), or the TS of "
+                     "one input stream of a DVB-S2 multistream transponder, "
+                     "which follows the tuning of its transponder."),
+      .off      = offsetof(mpegts_mux_t, mm_type),
+      .def.i    = MM_TYPE_TS,
+      .list     = dvb_mux_class_type_list,
+      .opts     = PO_ADVANCED | PO_DOC_NLIST
+    },
+    {
+      .type     = PT_STR,
+      .id       = "parent_mux",
+      .name     = N_("Transponder"),
+      .desc     = N_("The mux a sub-mux is carried in: its tuning follows "
+                     "that of the transponder."),
+      .off      = offsetof(dvb_mux_t, lm_parent),
+      .opts     = PO_RDONLY,
+      .get_opts = dvb_mux_class_parent_opts,
+    },
     {}
   }
 };
@@ -1134,21 +1182,203 @@ const idclass_t dvb_mux_dab_class =
  * Class methods
  * *************************************************************************/
 
+/*
+ * A sub-mux is carried in a transponder (an input stream of a multistream
+ * transponder) and has its tuning. It keeps the uuid of the transponder and
+ * follows its tuning when that changes (NIT, the user): at its save, and
+ * when the sub-mux starts. All with global_lock.
+ */
+
+/* the same frequency (and polarisation) */
+static int
+dvb_mux_same_frequency ( const dvb_mux_conf_t *a, const dvb_mux_conf_t *b )
+{
+  if (a->dmc_fe_type != b->dmc_fe_type ||
+      a->dmc_fe_freq != b->dmc_fe_freq)
+    return 0;
+  if (a->dmc_fe_type == DVB_TYPE_S &&
+      (a->u.dmc_fe_qpsk.polarisation != b->u.dmc_fe_qpsk.polarisation ||
+       a->u.dmc_fe_qpsk.orbital_pos != b->u.dmc_fe_qpsk.orbital_pos))
+    return 0;
+  return 1;
+}
+
+/* a mux that can carry the sub-mux: the mux of its transponder, without a
+ * stream - an enabled one (not a disabled duplicate, nor another description
+ * of the transponder set to ignore) */
+static int
+dvb_mux_can_carry ( const dvb_mux_t *p, const dvb_mux_t *sm )
+{
+  if (mpegts_mux_is_submux((const mpegts_mux_t *)p) ||
+      ((const mpegts_mux_t *)p)->mm_enabled != MM_ENABLE)
+    return 0;
+  return p->lm_tuning.dmc_fe_stream_id == DVB_NO_STREAM_ID_FILTER &&
+         dvb_mux_same_frequency(&p->lm_tuning, &sm->lm_tuning);
+}
+
+void
+dvb_mux_submux_link ( dvb_mux_t *sm, const dvb_mux_t *parent )
+{
+  char ubuf[UUID_HEX_SIZE];
+  const char *u = idnode_uuid_as_str(&parent->mm_id, ubuf);
+
+  if (sm->lm_parent && !strcmp(sm->lm_parent, u))
+    return;
+  tvh_str_update(&sm->lm_parent, u);
+  idnode_changed(&sm->mm_id);
+}
+
+/* the mux a sub-mux is carried in: its transponder; a configuration without
+ * the link (or with the transponder gone) takes the mux of its frequency */
+dvb_mux_t *
+dvb_mux_submux_parent ( dvb_mux_t *sm )
+{
+  mpegts_mux_t *mm = (mpegts_mux_t *)sm;
+  mpegts_mux_t *p;
+
+  if (sm->lm_parent) {
+    p = mpegts_mux_find(sm->lm_parent);
+    if (p != NULL && p != mm && p->mm_network == mm->mm_network &&
+        idnode_is_instance(&p->mm_id, &dvb_mux_class) && !mpegts_mux_is_submux(p))
+      return (dvb_mux_t *)p;
+  }
+  /* not while the muxes of the network are loaded: the transponder may
+   * come later, and the link to another mux of the same frequency would be
+   * saved (a variant of it from the NIT, a duplicate); and only to an
+   * enabled mux, not to an ignored or disabled one (such a variant) */
+  if (((dvb_network_t *)mm->mm_network)->ln_loading)
+    return NULL;
+  LIST_FOREACH(p, &mm->mm_network->mn_muxes, mm_network_link)
+    if (p != mm && dvb_mux_can_carry((dvb_mux_t *)p, sm)) {
+      dvb_mux_submux_link(sm, (dvb_mux_t *)p);
+      return (dvb_mux_t *)p;
+    }
+  return NULL;
+}
+
+/* the same tuning, member by member (the struct has padding) */
+static int
+dvb_mux_conf_same ( const dvb_mux_conf_t *a, const dvb_mux_conf_t *b )
+{
+  if (a->dmc_fe_type != b->dmc_fe_type ||
+      a->dmc_fe_delsys != b->dmc_fe_delsys ||
+      a->dmc_fe_modulation != b->dmc_fe_modulation ||
+      a->dmc_fe_freq != b->dmc_fe_freq ||
+      a->dmc_fe_inversion != b->dmc_fe_inversion ||
+      a->dmc_fe_rolloff != b->dmc_fe_rolloff ||
+      a->dmc_fe_pilot != b->dmc_fe_pilot ||
+      a->dmc_fe_stream_id != b->dmc_fe_stream_id ||
+      a->dmc_fe_pls_mode != b->dmc_fe_pls_mode ||
+      a->dmc_fe_pls_code != b->dmc_fe_pls_code ||
+      a->dmc_fe_data_slice != b->dmc_fe_data_slice)
+    return 0;
+  switch (a->dmc_fe_type) {
+  case DVB_TYPE_S:
+    return a->u.dmc_fe_qpsk.polarisation == b->u.dmc_fe_qpsk.polarisation &&
+           a->u.dmc_fe_qpsk.orbital_pos == b->u.dmc_fe_qpsk.orbital_pos &&
+           a->u.dmc_fe_qpsk.symbol_rate == b->u.dmc_fe_qpsk.symbol_rate &&
+           a->u.dmc_fe_qpsk.fec_inner == b->u.dmc_fe_qpsk.fec_inner;
+  case DVB_TYPE_C:
+    return a->u.dmc_fe_qam.symbol_rate == b->u.dmc_fe_qam.symbol_rate &&
+           a->u.dmc_fe_qam.fec_inner == b->u.dmc_fe_qam.fec_inner;
+  case DVB_TYPE_T:
+    return a->u.dmc_fe_ofdm.bandwidth == b->u.dmc_fe_ofdm.bandwidth &&
+           a->u.dmc_fe_ofdm.code_rate_HP == b->u.dmc_fe_ofdm.code_rate_HP &&
+           a->u.dmc_fe_ofdm.code_rate_LP == b->u.dmc_fe_ofdm.code_rate_LP &&
+           a->u.dmc_fe_ofdm.transmission_mode == b->u.dmc_fe_ofdm.transmission_mode &&
+           a->u.dmc_fe_ofdm.guard_interval == b->u.dmc_fe_ofdm.guard_interval &&
+           a->u.dmc_fe_ofdm.hierarchy_information == b->u.dmc_fe_ofdm.hierarchy_information;
+  default:
+    return 0;
+  }
+}
+
+/* the tuning of the transponder, except what makes this a sub-mux (its
+ * stream); 1 = changed */
+int
+dvb_mux_submux_sync ( dvb_mux_t *sm )
+{
+  dvb_mux_t *p = dvb_mux_submux_parent(sm);
+  dvb_mux_conf_t dmc;
+
+  if (p == NULL)
+    return 0;
+  memcpy(&dmc, &p->lm_tuning, sizeof(dmc));
+  if (mpegts_mux_in_bbframes((mpegts_mux_t *)sm))
+    dmc.dmc_fe_stream_id = sm->lm_tuning.dmc_fe_stream_id;
+  if (dvb_mux_conf_same(&dmc, &sm->lm_tuning))
+    return 0;
+  tvhinfo(LS_MPEGTS, "%s: tuning of the transponder %s taken over",
+          sm->mm_nicename, p->mm_nicename);
+  memcpy(&sm->lm_tuning, &dmc, sizeof(dmc));
+  mpegts_mux_update_nice_name((mpegts_mux_t *)sm);
+  idnode_changed(&sm->mm_id);
+  return 1;
+}
+
+/* a sub-mux of the transponder, NULL if it has none */
+static mpegts_mux_t *
+dvb_mux_first_submux ( dvb_mux_t *lm )
+{
+  mpegts_mux_t *mm = (mpegts_mux_t *)lm;
+  mpegts_mux_t *p;
+
+  LIST_FOREACH(p, &mm->mm_network->mn_muxes, mm_network_link)
+    if (mpegts_mux_is_submux(p) && dvb_mux_submux_parent((dvb_mux_t *)p) == lm)
+      return p;
+  return NULL;
+}
+
+/* the transponder has changed: its sub-muxes follow */
+static void
+dvb_mux_submux_propagate ( dvb_mux_t *lm )
+{
+  mpegts_mux_t *mm = (mpegts_mux_t *)lm;
+  mpegts_mux_t *p;
+
+  LIST_FOREACH(p, &mm->mm_network->mn_muxes, mm_network_link)
+    if (mpegts_mux_is_submux(p) && dvb_mux_submux_parent((dvb_mux_t *)p) == lm)
+      dvb_mux_submux_sync((dvb_mux_t *)p);
+}
+
 static htsmsg_t *
 dvb_mux_config_save ( mpegts_mux_t *mm, char *filename, size_t fsize )
 {
   char ubuf1[UUID_HEX_SIZE];
   char ubuf2[UUID_HEX_SIZE];
-  htsmsg_t *c = htsmsg_create_map();
+  htsmsg_t *c = htsmsg_create_map(), *root;
   if (filename == NULL) {
     mpegts_mux_save(mm, c, 1);
   } else {
+    if (!mpegts_mux_is_submux(mm))
+      dvb_mux_submux_propagate((dvb_mux_t *)mm);
     mpegts_mux_save(mm, c, 0);
     snprintf(filename, fsize, "input/dvb/networks/%s/muxes/%s",
              idnode_uuid_as_str(&mm->mm_network->mn_id, ubuf1),
              idnode_uuid_as_str(&mm->mm_id, ubuf2));
   }
+  /* a TS mux is saved as before: without a type (none = TS); in its file
+   * the fields are in "config" */
+  if (mm->mm_type == MM_TYPE_TS &&
+      (root = filename ? htsmsg_get_map(c, "config") : c) != NULL)
+    htsmsg_delete_field(root, "tstype");
   return c;
+}
+
+/*
+ * The name of a sub-mux is the name of what carries it, then one part for
+ * it: "ISI <n>" for an input stream. The type is not in the name (it has a
+ * field of its own).
+ */
+static void
+dvb_mux_submux_name ( mpegts_mux_t *mm, char *buf, size_t len )
+{
+  const dvb_mux_conf_t *dmc = &((dvb_mux_t *)mm)->lm_tuning;
+  size_t l = strlen(buf);
+
+  if (mm->mm_type != MM_TYPE_ISI || l + 1 >= len)
+    return;
+  snprintf(buf + l, len - l, " ISI %d", dmc->dmc_fe_stream_id);
 }
 
 static void
@@ -1183,6 +1413,9 @@ dvb_mux_display_name ( mpegts_mux_t *mm, char *buf, size_t len )
     else
       snprintf(buf, len, "%d%s", freq, extra);
   }
+
+  /* a sub-mux has the tuning of its transponder: add what tells it apart */
+  dvb_mux_submux_name(mm, buf, len);
 }
 
 static void
@@ -1197,8 +1430,27 @@ dvb_mux_delete ( mpegts_mux_t *mm, int delconf )
                       idnode_uuid_as_str(&mm->mm_network->mn_id, ubuf1),
                       idnode_uuid_as_str(&mm->mm_id, ubuf2));
 
-  /* Delete the mux */
+  /* a sub-mux has the tuning of its transponder in its last save */
+  if (!delconf && mpegts_mux_is_submux(mm))
+    dvb_mux_submux_sync((dvb_mux_t *)mm);
+
+  /* the sub-muxes of a transponder go with it: left behind, a sub-mux
+   * would keep its link to a mux that is gone */
+  if (!mpegts_mux_is_submux(mm)) {
+    mpegts_mux_t *sub;
+    while ((sub = dvb_mux_first_submux((dvb_mux_t *)mm)) != NULL)
+      sub->mm_delete(sub, delconf);
+  }
+
+  /* Delete the mux (the strings stay for its last save, see dvb_mux_free) */
   mpegts_mux_delete(mm, delconf);
+}
+
+static void
+dvb_mux_free ( mpegts_mux_t *mm )
+{
+  free(((dvb_mux_t *)mm)->lm_parent);
+  mpegts_mux_free(mm);
 }
 
 /* **************************************************************************
@@ -1280,6 +1532,7 @@ dvb_mux_create0
 
   /* Callbacks */
   lm->mm_delete           = dvb_mux_delete;
+  lm->mm_free             = dvb_mux_free;
   lm->mm_display_name     = dvb_mux_display_name;
   lm->mm_config_save      = dvb_mux_config_save;
 

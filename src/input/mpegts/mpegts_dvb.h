@@ -28,6 +28,11 @@ typedef struct dvb_network
    * Network type
    */
   dvb_fe_type_t ln_type;
+
+  /*
+   * Its muxes are being loaded (a sub-mux may come before its transponder)
+   */
+  int ln_loading;
 } dvb_network_t;
 
 typedef struct dvb_mux
@@ -38,6 +43,12 @@ typedef struct dvb_mux
    * Tuning information
    */
   dvb_mux_conf_t lm_tuning;
+
+  /*
+   * A sub-mux: the uuid of the transponder it is carried in, whose tuning
+   * it follows (dvb_mux_submux_sync())
+   */
+  char *lm_parent;
 
   /*
    * Frequencies for Mapping
@@ -112,5 +123,12 @@ dvb_mux_t *dvb_mux_create0
 
 #define dvb_mux_create1(n, u, c)\
   dvb_mux_create0(n, MPEGTS_ONID_NONE, MPEGTS_TSID_NONE, NULL, u, c)
+
+extern const idclass_t dvb_mux_class;
+
+/* sub-muxes follow the tuning of the transponder they are carried in */
+dvb_mux_t *dvb_mux_submux_parent ( dvb_mux_t *sm );
+void       dvb_mux_submux_link   ( dvb_mux_t *sm, const dvb_mux_t *parent );
+int        dvb_mux_submux_sync   ( dvb_mux_t *sm );
 
 #endif /* __TVH_MPEGTS_DVB_H__ */

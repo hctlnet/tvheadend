@@ -243,6 +243,12 @@ mpegts_mux_instance_start
     return 0;
   }
 
+#if ENABLE_MPEGTS_DVB
+  /* a sub-mux is tuned as its transponder is now */
+  if (mpegts_mux_is_submux(mm))
+    dvb_mux_submux_sync((dvb_mux_t *)mm);
+#endif
+
   /* Update nicename */
   mpegts_mux_update_nice_name(mm);
 
