@@ -20,6 +20,9 @@
  * networks are loaded for it) and by state (scan failed, disabled); the
  * rows above a match open.
  * It optionally looks in the names of the services too.
+ *
+ * Live: Comet notifications of muxes, services and networks reload the
+ * networks they belong to (collected for a second).
  * The "On" box of a row enables a mux or service at once.
  *
  * The networks come from `mpegts/network/grid` (all of them: the muxes
@@ -69,6 +72,9 @@ import IdnodeEditor from '@/components/IdnodeEditor.vue'
 import IdnodePickEntityDialog from '@/components/IdnodePickEntityDialog.vue'
 import SearchInput from '@/components/SearchInput.vue'
 import { apiCall } from '@/api/client'
+import { cometClient } from '@/api/comet'
+import type { IdnodeNotification } from '@/types/comet'
+import { useStaleDataRecovery } from '@/composables/useStaleDataRecovery'
 import { useAccessStore } from '@/stores/access'
 import { useConfirmDialog } from '@/composables/useConfirmDialog'
 import { useI18n } from '@/composables/useI18n'
@@ -867,6 +873,70 @@ onBeforeUnmount(() => {
   for (const id of scanPolls.values()) window.clearTimeout(id)
   scanPolls.clear()
 })
+
+/* Live updates: the networks whose muxes or services changed reload */
+const pendingMux = new Set<string>()
+const pendingSvc = new Set<string>()
+let pendingMuxCreate = false
+let pendingSvcCreate = false
+let pendingNetworks = false
+let cometTimer: number | undefined
+
+function onNotification(kind: 'mux' | 'service' | 'network', msg: IdnodeNotification) {
+  const uuids = [...(msg.change ?? []), ...(msg.delete ?? [])]
+  const created = (msg.create ?? []).length > 0
+  if (!uuids.length && !created) return
+  if (kind === 'network') pendingNetworks = true
+  else if (kind === 'mux') {
+    for (const u of uuids) pendingMux.add(u)
+    if (created) pendingMuxCreate = true
+  } else {
+    for (const u of uuids) pendingSvc.add(u)
+    if (created) pendingSvcCreate = true
+  }
+  if (cometTimer === undefined) cometTimer = window.setTimeout(applyNotifications, 1000)
+}
+
+async function applyNotifications() {
+  cometTimer = undefined
+  const muxNets = new Set<NetworkEntry>()
+  const svcNets = new Set<NetworkEntry>()
+  for (const u of pendingMux) {
+    const e = index.value.get(u)
+    if (e?.kind === 'mux') muxNets.add(e.net)
+  }
+  /* a service found by name only: the search runs again */
+  const hit = new Set([...serviceHits.value.values()].flat().map((x) => x.uuid))
+  let search = pendingSvcCreate
+  for (const u of pendingSvc) {
+    const e = index.value.get(u)
+    if (e?.kind === 'service' && services.value[e.net.uuid]) svcNets.add(e.net)
+    if (hit.has(u)) search = true
+  }
+  /* a new one: its network is not known here, the loaded ones reload */
+  if (pendingMuxCreate) for (const n of networks.value) if (trees.value[n.uuid]) muxNets.add(n)
+  if (pendingSvcCreate) for (const n of networks.value) if (services.value[n.uuid]) svcNets.add(n)
+  const nets = pendingNetworks
+  pendingMux.clear()
+  pendingSvc.clear()
+  pendingMuxCreate = pendingSvcCreate = pendingNetworks = false
+  if (nets) await loadNetworks()
+  for (const n of muxNets) void loadMuxes(n, false)
+  for (const n of svcNets) void loadServices(n)
+  if (search && hitsOn.value) void searchServiceNames()
+}
+
+const cometOff = [
+  cometClient.on('mpegts_mux', (m) => onNotification('mux', m as IdnodeNotification)),
+  cometClient.on('service', (m) => onNotification('service', m as IdnodeNotification)),
+  cometClient.on('mpegts_network', (m) => onNotification('network', m as IdnodeNotification)),
+]
+onBeforeUnmount(() => {
+  for (const off of cometOff) off()
+  window.clearTimeout(cometTimer)
+})
+/* after a long Comet gap (tab asleep, server restarted): all again */
+useStaleDataRecovery({ refetch: () => void reload() })
 
 /* In the rows: enable. The change shows at once; when its save fails,
  * the old value is back and the network reloads. */

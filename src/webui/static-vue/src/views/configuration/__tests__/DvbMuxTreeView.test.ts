@@ -10,9 +10,11 @@
 import { describe, expect, it, vi } from 'vitest'
 import { flushPromises, mount } from '@vue/test-utils'
 import PrimeVue from 'primevue/config'
+import { fireComet } from '@/test/__helpers__/cometClientMock'
 
 const stubs = await vi.hoisted(() => import('@/test/__helpers__/gridViewTestUtils'))
 vi.mock('@/api/client', () => stubs.apiClient)
+vi.mock('@/api/comet', () => import('@/test/__helpers__/cometClientMock'))
 vi.mock('@/components/IdnodeEditor.vue', () => stubs.idnodeEditor)
 vi.mock('@/components/IdnodePickEntityDialog.vue', () => stubs.emptyComponent)
 vi.mock('vue-router', () => stubs.vueRouter)
@@ -430,6 +432,16 @@ describe('DvbMuxTreeView load errors', () => {
     s.gate = (ep) => (ep === 'mpegts/mux/grid' ? Promise.reject(new Error('busy')) : undefined)
     await expand(w, 'Astra (1)')
     expect(w.find('.mux-tree__error').text()).toBe('Failed to load: busy')
+    /* the networks load fine: the error of the muxes stays */
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    try {
+      fireComet('mpegts_network', { change: ['n1'] })
+      await vi.advanceTimersByTimeAsync(1500)
+    } finally {
+      vi.useRealTimers()
+    }
+    await flushPromises()
+    expect(w.find('.mux-tree__error').exists()).toBe(true)
     s.gate = undefined
     await button(w, 'Reload').trigger('click')
     await flushPromises()
@@ -848,5 +860,58 @@ describe('DvbMuxTreeView Scan of the selection', () => {
     } finally {
       vi.useRealTimers()
     }
+  })
+})
+
+/* a notification, and the second the view collects them for */
+async function notify(cls: string, msg: Row) {
+  vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+  try {
+    fireComet(cls, msg)
+    await vi.advanceTimersByTimeAsync(1500)
+  } finally {
+    vi.useRealTimers()
+  }
+  await flushPromises()
+}
+
+describe('DvbMuxTreeView live updates', () => {
+  it('loads the network of a changed mux again, not the others', async () => {
+    const s = server()
+    const w = await mountTree(s)
+    await expand(w, 'Astra (1)')
+    await expand(w, 'IPTV Automatic Network')
+    const before = calls('mpegts/mux/grid').length
+    s.muxes[0].name = '11495H'
+    await notify('mpegts_mux', { change: ['m1'] })
+    expect(calls('mpegts/mux/grid')).toHaveLength(before + 1)
+    expect(shows(w, '11495H')).toBe(true)
+  })
+
+  it('loads the networks again when one changed', async () => {
+    const s = server()
+    const w = await mountTree(s)
+    s.networks[0].networkname = 'Astra 19.2E'
+    await notify('mpegts_network', { change: ['n1'] })
+    expect(shows(w, 'Astra 19.2E')).toBe(true)
+  })
+
+  it('loads the services of a network again for a change of one of them only', async () => {
+    const s = server()
+    s.networks.push({ uuid: 'n3', networkname: 'ASTRA', num_mux: 1, num_svc: 1, num_chn: 0 })
+    s.muxes.push({
+      uuid: 'm3', name: '10744H', network: 'ASTRA', network_uuid: 'n3', tstype: 0,
+      num_svc: 1, num_chn: 0, scan_state: 0, enabled: 1,
+    })
+    s.services.push({ uuid: 's3', svcname: 'Other', sid: 1, network: 'ASTRA', multiplex_uuid: 'm3', enabled: true })
+    const w = await mountTree(s)
+    await expand(w, 'Astra (1)')
+    await expand(w, '11494H')
+    const before = calls('mpegts/service/grid').length
+    /* a change of the other network's service: not one of Astra's */
+    await notify('service', { change: ['s3'] })
+    expect(calls('mpegts/service/grid')).toHaveLength(before)
+    await notify('service', { change: ['s1'] })
+    expect(calls('mpegts/service/grid')).toHaveLength(before + 1)
   })
 })
