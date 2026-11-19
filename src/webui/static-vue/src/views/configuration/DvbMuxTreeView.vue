@@ -45,11 +45,18 @@
  * "Services (n)" row of their own, collapsed, above the sub-muxes.
  * The services of a network are loaded when the first such row of it is
  * expanded, and again after a scan or an edit.
+ *
+ * Large setups: only the rows in view are rendered (windowing, the row
+ * height measured); the grids send only the fields the tree shows
+ * (`list`); the search in service names is one request to the server
+ * for the first SERVICE_HITS_MAX matches. Loads run one at a time per
+ * network (`serialized`).
  */
 import {
   computed,
   onBeforeUnmount,
   onMounted,
+  onUpdated,
   ref,
   shallowRef,
   triggerRef,
@@ -566,6 +573,52 @@ watch(
 const muxTotal = computed(() =>
   Object.values(trees.value).reduce((n, tree) => n + countMuxes(tree), 0),
 )
+
+/* Windowing: only the rows in view and OVERSCAN around them are
+ * rendered, a spacer row stands for the ones above and below. A row is
+ * one line (--tvh-row-height), its height measured from a rendered one. */
+const scrollEl = ref<HTMLElement | null>(null)
+const scrollTop = ref(0)
+const viewHeight = ref(0)
+const rowHeight = ref(36)
+const OVERSCAN = 10
+/* the rows rendered while the height of the view is not known */
+const WINDOW_MIN = 100
+
+const windowRange = computed(() => {
+  const n = visible.value.length
+  if (viewHeight.value <= 0) return { start: 0, end: Math.min(n, WINDOW_MIN) }
+  const h = rowHeight.value
+  const end = Math.min(n, Math.ceil((scrollTop.value + viewHeight.value) / h) + OVERSCAN)
+  const start = Math.min(end, Math.max(0, Math.floor(scrollTop.value / h) - OVERSCAN))
+  return { start, end }
+})
+const windowRows = computed(() => visible.value.slice(windowRange.value.start, windowRange.value.end))
+const padTop = computed(() => windowRange.value.start * rowHeight.value)
+const padBottom = computed(() => (visible.value.length - windowRange.value.end) * rowHeight.value)
+
+function onScroll() {
+  if (scrollEl.value) scrollTop.value = scrollEl.value.scrollTop
+}
+
+function measureRows() {
+  const el = scrollEl.value
+  if (!el) return
+  viewHeight.value = el.clientHeight
+  const h = el.querySelector<HTMLElement>('tbody tr.mux-tree__row')?.getBoundingClientRect().height ?? 0
+  if (h > 0 && Math.abs(h - rowHeight.value) > 0.5) rowHeight.value = h
+}
+
+let resizeObserver: ResizeObserver | undefined
+onMounted(() => {
+  measureRows()
+  if (typeof ResizeObserver !== 'undefined' && scrollEl.value) {
+    resizeObserver = new ResizeObserver(measureRows)
+    resizeObserver.observe(scrollEl.value)
+  }
+})
+onUpdated(measureRows)
+onBeforeUnmount(() => resizeObserver?.disconnect())
 
 /* every loaded mux and service: its kind and network */
 type RowKind = 'mux' | 'service'
@@ -1104,7 +1157,7 @@ onMounted(loadNetworks)
       </span>
     </div>
     <p v-if="loadError" class="mux-tree__error" role="alert">{{ t('Failed to load:') }} {{ loadError }}</p>
-    <div class="mux-tree__scroll">
+    <div ref="scrollEl" class="mux-tree__scroll" @scroll.passive="onScroll">
       <table class="mux-tree__table" :aria-label="t('Muxes')">
         <colgroup>
           <col class="mux-tree__col-select" />
@@ -1138,8 +1191,11 @@ onMounted(loadNetworks)
           </tr>
         </thead>
         <tbody>
+          <tr v-if="padTop > 0" class="mux-tree__pad" aria-hidden="true">
+            <td :style="{ height: `${padTop}px` }" />
+          </tr>
           <tr
-            v-for="r in visible"
+            v-for="r in windowRows"
             :key="r.key"
             class="mux-tree__row"
             :class="{
@@ -1277,6 +1333,9 @@ onMounted(loadNetworks)
                 <ScanSearch :size="15" :stroke-width="2" />
               </button>
             </td>
+          </tr>
+          <tr v-if="padBottom > 0" class="mux-tree__pad" aria-hidden="true">
+            <td :style="{ height: `${padBottom}px` }" />
           </tr>
         </tbody>
       </table>
@@ -1546,6 +1605,12 @@ onMounted(loadNetworks)
 
 .mux-tree__table tbody tr.mux-tree__row:hover {
   background: color-mix(in srgb, var(--tvh-primary) var(--tvh-hover-strength), transparent);
+}
+
+/* the spacers for the rows above and below the rendered ones */
+.mux-tree__table .mux-tree__pad td {
+  padding: 0;
+  border: 0;
 }
 
 .mux-tree__num {

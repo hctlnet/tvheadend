@@ -915,3 +915,16 @@ describe('DvbMuxTreeView live updates', () => {
     expect(calls('mpegts/service/grid')).toHaveLength(before + 1)
   })
 })
+
+describe('DvbMuxTreeView with many muxes', () => {
+  it('renders the rows in view only, a spacer for the rest', async () => {
+    const s = server()
+    manyMuxes(s, 1000)
+    const w = await mountTree(s)
+    await expand(w, 'Astra (1001)')
+    const rows = w.findAll('tbody tr.mux-tree__row')
+    expect(rows.length).toBeGreaterThan(20)
+    expect(rows.length).toBeLessThan(150)
+    expect(w.find('tbody tr.mux-tree__pad').exists()).toBe(true)
+  })
+})
