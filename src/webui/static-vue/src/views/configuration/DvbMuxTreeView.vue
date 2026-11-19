@@ -54,6 +54,9 @@
  * network (`serialized`).
  *
  * Keyboard: the table is a treegrid with an active row (see onKeydown).
+ *
+ * Input streams: the button of a DVB-S2 transponder row adds an input
+ * stream by its number (`mpegts/mux/add_stream`).
  */
 import {
   computed,
@@ -72,6 +75,7 @@ import {
   ChevronRight,
   HelpCircle,
   List,
+  ListPlus,
   Lock,
   Pencil,
   Play,
@@ -82,6 +86,7 @@ import {
 } from 'lucide-vue-next'
 import IdnodeEditor from '@/components/IdnodeEditor.vue'
 import IdnodePickEntityDialog from '@/components/IdnodePickEntityDialog.vue'
+import MuxAddStreamDialog from '@/components/MuxAddStreamDialog.vue'
 import SearchInput from '@/components/SearchInput.vue'
 import { apiCall } from '@/api/client'
 import { cometClient } from '@/api/comet'
@@ -1192,6 +1197,57 @@ async function toggleEnabled(r: FlatRow) {
   }
 }
 
+/* Add an input stream: the transponder asked about, then the request.
+ * A mux with services is not turned into a transponder without a word:
+ * the server says how many it has, and takes the stream with `force`. */
+const addStreamTo = ref<{ row: MuxRow; net: NetworkEntry } | null>(null)
+
+/* a DVB-S2 mux that is no sub-mux itself */
+function canAddStream(r: FlatRow): boolean {
+  return !!r.node && !!r.net && r.depth === 1 && !r.node.row.parent_mux && r.node.row.delsys === 'DVB-S2'
+}
+
+function askAddStream(r: FlatRow) {
+  if (r.node && r.net) addStreamTo.value = { row: r.node.row, net: r.net }
+}
+
+async function addStream(stream: number) {
+  const target = addStreamTo.value
+  addStreamTo.value = null
+  if (!target) return
+  const request = (force: boolean) =>
+    apiCall<{ uuid?: string; error?: string; services?: number }>('mpegts/mux/add_stream', {
+      uuid: target.row.uuid,
+      stream_id: stream,
+      ...(force ? { force: 1 } : {}),
+    })
+  try {
+    let res = await request(false)
+    if (!res.uuid && res.services) {
+      const ok = await confirmDialog.ask(
+        t(
+          'The mux {0} has {1} service(s). As a multistream transponder it is not tuned any more: they do not play until its last input stream is deleted again. Add the input stream?',
+          target.row.name ?? '',
+          res.services,
+        ),
+        { severity: 'danger' },
+      )
+      if (!ok) return
+      res = await request(true)
+    }
+    if (!res.uuid) {
+      toast.error(`${t('Failed to add the input stream')}: ${res.error ?? ''}`)
+      return
+    }
+  } catch (e) {
+    toast.error(`${t('Failed to add the input stream')}: ${apiErrorMessage(e)}`)
+    return
+  }
+  /* the transponder open: the new stream shows */
+  expanded.value = withKey(expanded.value, target.row.uuid, true)
+  await loadMuxes(target.net, false)
+}
+
 /* queued or scanning: in place of the result (the idle queue: next to it) */
 function scanStateLabel(row: MuxRow): string {
   if (!scanQueued(row)) return ''
@@ -1503,6 +1559,17 @@ onMounted(loadNetworks)
             </td>
             <td class="mux-tree__action">
               <button
+                v-if="canAddStream(r)"
+                type="button"
+                class="mux-tree__addstream"
+                :title="t('Add an input stream to this transponder')"
+                :aria-label="t('Add an input stream')"
+                @click.stop="askAddStream(r)"
+                @dblclick.stop
+              >
+                <ListPlus :size="15" :stroke-width="2" />
+              </button>
+              <button
                 v-if="playPath(r)"
                 type="button"
                 class="mux-tree__play"
@@ -1571,6 +1638,12 @@ onMounted(loadNetworks)
     :title="editingTitle"
     @close="onEditorClose"
     @created="onCreated"
+  />
+  <MuxAddStreamDialog
+    :visible="!!addStreamTo"
+    :mux-name="addStreamTo?.row.name ?? ''"
+    @add="addStream"
+    @close="addStreamTo = null"
   />
 </template>
 
@@ -1685,7 +1758,7 @@ onMounted(loadNetworks)
 }
 
 .mux-tree__col-action {
-  width: 64px;
+  width: 92px;
 }
 
 .mux-tree__col-select {
@@ -1752,7 +1825,8 @@ onMounted(loadNetworks)
 }
 
 .mux-tree__scan,
-.mux-tree__play {
+.mux-tree__play,
+.mux-tree__addstream {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -1767,7 +1841,8 @@ onMounted(loadNetworks)
 }
 
 .mux-tree__scan:hover:not(:disabled),
-.mux-tree__play:hover {
+.mux-tree__play:hover,
+.mux-tree__addstream:hover {
   color: var(--tvh-primary);
   background: color-mix(in srgb, var(--tvh-primary) var(--tvh-hover-strength), transparent);
 }
@@ -1778,7 +1853,8 @@ onMounted(loadNetworks)
 }
 
 .mux-tree__scan:focus-visible,
-.mux-tree__play:focus-visible {
+.mux-tree__play:focus-visible,
+.mux-tree__addstream:focus-visible {
   outline: 2px solid var(--tvh-focus);
 }
 
