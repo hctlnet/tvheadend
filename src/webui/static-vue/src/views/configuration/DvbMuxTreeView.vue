@@ -10,6 +10,10 @@
  * it (the input streams of a multistream transponder), and the services
  * of each mux.
  *
+ * The filter finds muxes by name, type, provider network and tuning (all
+ * networks are loaded for it) and by state (scan failed, disabled); the
+ * rows above a match open.
+ *
  * The networks come from `mpegts/network/grid` (all of them: the muxes
  * of an IPTV network have no sub-muxes and are a flat list), the muxes
  * of a network from `mpegts/mux/grid` when it is first expanded. The
@@ -28,6 +32,7 @@
  */
 import {
   computed,
+  onBeforeUnmount,
   onMounted,
   ref,
   shallowRef,
@@ -42,6 +47,7 @@ import {
   Lock,
   RefreshCw,
 } from 'lucide-vue-next'
+import SearchInput from '@/components/SearchInput.vue'
 import { apiCall } from '@/api/client'
 import { useI18n } from '@/composables/useI18n'
 import { apiErrorMessage } from '@/utils/apiErrorMessage'
@@ -51,11 +57,14 @@ import {
   countMuxes,
   exactMatch,
   expandableKeys,
+  filterTree,
   MUX_FIELDS,
   MUX_TYPE_TS,
+  muxSearchText,
   muxTypeName,
   scanQueued,
   scanResultName,
+  SCAN_RESULT_FAIL,
   SCAN_STATE_ACTIVE,
   SCAN_STATE_IPEND,
   SERVICE_FIELDS,
@@ -67,6 +76,7 @@ import {
   type MuxRow,
   type MuxTreeNode,
   type ServiceRow,
+  type TreeFilterResult,
 } from './muxTree'
 
 const { t } = useI18n()
@@ -115,6 +125,7 @@ const loadingNets = ref(new Set<string>())
 const expanded = ref(new Set<string>())
 /* per network: its services by mux uuid (loaded when needed) */
 const services = shallowRef<Record<string, Map<string, ServiceRow[]>>>({})
+const onlyWithSubMuxes = ref(false)
 /* the networks loaded once: an empty tree says why */
 const networksLoaded = ref(false)
 
@@ -269,8 +280,13 @@ function withKey(set: Set<string>, key: string, on: boolean): Set<string> {
   return next
 }
 
+/* the rows a filter opened that were closed by hand: they stay closed
+ * until the filter changes */
+const filterClosed = ref(new Set<string>())
+
 function setOpen(key: string, open: boolean) {
   expanded.value = withKey(expanded.value, key, open)
+  if (filterOn.value) filterClosed.value = withKey(filterClosed.value, key, !open)
 }
 
 async function toggleNetwork(net: NetworkEntry, open: boolean) {
@@ -290,6 +306,7 @@ function toggle(row: FlatRow) {
 }
 
 async function expandAll() {
+  filterClosed.value = new Set()
   const next = new Set(expanded.value)
   for (const n of networks.value) if (n.numMux > 0) next.add(n.uuid)
   expanded.value = next
@@ -303,6 +320,8 @@ async function expandAll() {
 
 function collapseAll() {
   expanded.value = new Set()
+  /* what a filter opened too */
+  if (filterOn.value) filterClosed.value = new Set(visible.value.filter((r) => r.hasChildren).map((r) => r.key))
 }
 
 /* the flat grid of all muxes: the list view of this tab */
@@ -325,12 +344,52 @@ async function reload() {
   const svcNets = new Map(servicesWanted.value)
   for (const n of networks.value) if (services.value[n.uuid]) svcNets.set(n.uuid, n)
   const wanted = (n: NetworkEntry) =>
-    !!trees.value[n.uuid] || (n.numMux > 0 && expanded.value.has(n.uuid))
+    !!trees.value[n.uuid] || (n.numMux > 0 && (expanded.value.has(n.uuid) || filterOn.value))
   await Promise.all([
     ...networks.value.filter(wanted).map((n) => loadMuxes(n, false)),
     ...[...svcNets.values()].map((n) => loadServices(n)),
   ])
 }
+
+/* the top nodes shown: with "only with sub-muxes" the transponders
+ * that carry some, and the sub-muxes without their transponder */
+function topNodes(tree: MuxTreeNode[]): MuxTreeNode[] {
+  if (!onlyWithSubMuxes.value) return tree
+  return tree.filter((n) => n.children.length > 0 || n.orphan)
+}
+
+/* Filter: text, state */
+const filterText = ref('')
+const filterQuery = ref('')
+let filterTimer: number | undefined
+watch(filterText, (v) => {
+  window.clearTimeout(filterTimer)
+  filterTimer = window.setTimeout(() => (filterQuery.value = v.trim().toLowerCase()), 250)
+})
+const stateFilter = ref<'all' | 'failed' | 'disabled'>('all')
+const filterOn = computed(() => filterQuery.value !== '' || stateFilter.value !== 'all')
+onBeforeUnmount(() => window.clearTimeout(filterTimer))
+/* another filter: what it opens is open again */
+watch([filterQuery, stateFilter, onlyWithSubMuxes], () => (filterClosed.value = new Set()))
+
+function muxMatches(n: MuxTreeNode): boolean {
+  if (filterQuery.value && !muxSearchText(n).includes(filterQuery.value)) return false
+  if (stateFilter.value === 'all') return true
+  return stateFilter.value === 'failed' ? n.row.scan_result === SCAN_RESULT_FAIL : n.row.enabled !== 1
+}
+
+const filterResults = computed<Record<string, TreeFilterResult>>(() => {
+  const out: Record<string, TreeFilterResult> = {}
+  if (!filterOn.value) return out
+  for (const net of networks.value) out[net.uuid] = filterTree(topNodes(trees.value[net.uuid] ?? []), muxMatches)
+  return out
+})
+
+/* the filter needs all networks */
+watch(filterOn, (on) => {
+  if (!on) return
+  for (const n of networks.value) if (n.numMux > 0 && !trees.value[n.uuid]) void loadMuxes(n, false)
+})
 
 const visible = computed<FlatRow[]>(() => {
   const out: FlatRow[] = []
@@ -358,27 +417,33 @@ const visible = computed<FlatRow[]>(() => {
     out.push({ key, depth, svcGroup: { mux: row, count: row.num_svc ?? 0 }, net, hasChildren: true, open })
     if (open) serviceList(net, row, depth + 1)
   }
-  const walk = (net: NetworkEntry, nodes: MuxTreeNode[], depth: number) => {
+  const walk = (net: NetworkEntry, nodes: MuxTreeNode[], depth: number, f: TreeFilterResult | null, inMatch: boolean) => {
     for (const node of nodes) {
-      const open = expanded.value.has(node.key)
+      if (f && !inMatch && !f.show.has(node.key)) continue
+      const forced = !!f && !inMatch && f.open.has(node.key) && !filterClosed.value.has(node.key)
+      const open = forced || expanded.value.has(node.key)
       const wide = depth === 1 && !node.orphan && (node.row.tstype ?? MUX_TYPE_TS) === MUX_TYPE_TS
       const svc = (node.row.num_svc ?? 0) > 0
       out.push({ key: node.key, depth, node, net, hasChildren: node.children.length > 0 || svc, open, wide })
       if (!open) continue
+      const self = !!f && f.self.has(node.key)
       if (svc) {
         if (node.children.length) serviceGroup(net, node.row, depth + 1)
         else serviceList(net, node.row, depth + 1)
       }
-      walk(net, node.children, depth + 1)
+      walk(net, node.children, depth + 1, f, inMatch || self)
     }
   }
   for (const net of networks.value) {
-    const open = expanded.value.has(net.uuid)
+    const f = filterOn.value ? filterResults.value[net.uuid] : null
+    /* a filter shows the networks with a match (and those still loading) */
+    if (f && (net.numMux === 0 || (trees.value[net.uuid] && f.show.size === 0))) continue
+    const open = (!!f && !filterClosed.value.has(net.uuid)) || expanded.value.has(net.uuid)
     out.push({ key: net.uuid, depth: 0, network: net, hasChildren: net.numMux > 0, open, wide: true })
     if (!open) continue
     if (loadingNets.value.has(net.uuid) && !trees.value[net.uuid])
       out.push({ key: `${net.uuid}:loading`, depth: 1, hasChildren: false, open: false, loading: true })
-    walk(net, trees.value[net.uuid] ?? [], 1)
+    walk(net, topNodes(trees.value[net.uuid] ?? []), 1, f, false)
   }
   return out
 })
@@ -496,6 +561,23 @@ onMounted(loadNetworks)
       <span class="mux-tree__count">
         {{ t('{0} networks, {1} muxes loaded', networks.length, muxTotal) }}
       </span>
+    </div>
+    <div class="mux-tree__toolbar mux-tree__filters">
+      <SearchInput
+        v-model="filterText"
+        class="mux-tree__search"
+        :placeholder="t('Filter: name, type, provider, tuning')"
+        :aria-label="t('Filter')"
+      />
+      <select v-model="stateFilter" class="mux-tree__select" :aria-label="t('State')">
+        <option value="all">{{ t('All muxes') }}</option>
+        <option value="failed">{{ t('Scan failed') }}</option>
+        <option value="disabled">{{ t('Disabled') }}</option>
+      </select>
+      <label class="mux-tree__check">
+        <input v-model="onlyWithSubMuxes" type="checkbox" />
+        {{ t('Only transponders with sub-muxes') }}
+      </label>
     </div>
     <p v-if="loadError" class="mux-tree__error" role="alert">{{ t('Failed to load:') }} {{ loadError }}</p>
     <div class="mux-tree__scroll">
@@ -650,6 +732,14 @@ onMounted(loadNetworks)
   padding: var(--tvh-space-2) 0;
 }
 
+.mux-tree__check {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--tvh-space-1);
+  font-size: var(--tvh-text-sm);
+  margin-left: var(--tvh-space-2);
+}
+
 .mux-tree__count {
   margin-left: auto;
   color: var(--tvh-text-muted);
@@ -711,6 +801,25 @@ onMounted(loadNetworks)
   height: 1.4rem;
   background: var(--tvh-border);
   margin: 0 var(--tvh-space-1);
+}
+
+.mux-tree__filters {
+  padding-top: 0;
+}
+
+.mux-tree__search {
+  width: 22rem;
+  max-width: 100%;
+}
+
+.mux-tree__select {
+  font: inherit;
+  font-size: var(--tvh-text-sm);
+  padding: 2px var(--tvh-space-1);
+  border: 1px solid var(--tvh-border);
+  border-radius: var(--tvh-radius-sm);
+  background: var(--tvh-bg-surface);
+  color: var(--tvh-text);
 }
 
 .mux-tree__busy {
