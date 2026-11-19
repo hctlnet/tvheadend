@@ -102,6 +102,12 @@ export function scanQueued(row: MuxRow): boolean {
   return st === SCAN_STATE_PEND || st === SCAN_STATE_ACTIVE
 }
 
+/* the server scans only an enabled mux (of an enabled network): a scan
+ * of a disabled or ignored one is dropped without a word */
+export function scanEnabled(row: MuxRow): boolean {
+  return (row.enabled ?? 1) === 1
+}
+
 /* "PSK/8" → "8PSK", "QAM/256" → "256QAM", others as they are */
 function modulationName(m: string | undefined): string {
   if (!m || m === 'AUTO' || m === 'NONE') return ''
