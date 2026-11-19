@@ -140,6 +140,74 @@ export function tuningLabel(row: MuxRow): string {
   return parts.join(' · ')
 }
 
+/* the fields of an `api/mpegts/service/grid` row the tree uses */
+export interface ServiceRow {
+  uuid: string
+  /* the name of its network (`mn_display_name`) */
+  network?: string
+  svcname?: string
+  sid?: number
+  provider?: string
+  dvb_servicetype?: number
+  encrypted?: boolean
+  caid?: string
+  channel?: string[]
+  enabled?: boolean
+  multiplex_uuid?: string
+  streams?: string
+}
+
+/* the fields of the service grid the tree uses (`list`) */
+export const SERVICE_FIELDS = [
+  'svcname', 'sid', 'provider', 'dvb_servicetype', 'encrypted', 'caid', 'channel', 'enabled', 'multiplex_uuid',
+  'network', 'streams',
+].join(',')
+
+/* service_type of the service descriptor (EN 300 468 table 87) */
+const SERVICE_TYPES: Record<number, () => string> = {
+  0x01: () => t('SD TV'),
+  0x02: () => t('Radio'),
+  0x03: () => t('Teletext'),
+  0x0a: () => t('Radio'),
+  0x0c: () => t('Data'),
+  0x10: () => t('MHP'),
+  0x11: () => t('HD TV'),
+  0x16: () => t('SD TV'),
+  0x19: () => t('HD TV'),
+  0x1c: () => t('3D TV'),
+  0x1f: () => t('UHD TV'),
+  0x20: () => t('UHD TV'),
+}
+
+export function serviceTypeName(type: number | undefined): string {
+  if (!type) return ''
+  return SERVICE_TYPES[type]?.() ?? `0x${type.toString(16).padStart(2, '0')}`
+}
+
+/* "1883:003311,1863:003343" → "1883, 1863" (the CA systems, not the providers) */
+export function caidList(caid: string | undefined): string {
+  if (!caid) return ''
+  const ids = caid
+    .split(',')
+    .map((c) => c.split(':')[0].trim())
+    .filter(Boolean)
+  return [...new Set(ids)].join(', ')
+}
+
+/* the services of a network by mux, by name */
+export function servicesByMux(rows: ServiceRow[]): Map<string, ServiceRow[]> {
+  const map = new Map<string, ServiceRow[]>()
+  for (const r of rows) {
+    const key = r.multiplex_uuid ?? ''
+    const l = map.get(key)
+    if (l) l.push(r)
+    else map.set(key, [r])
+  }
+  for (const l of map.values())
+    l.sort((a, b) => collator.compare(a.svcname ?? '', b.svcname ?? '') || (a.sid ?? 0) - (b.sid ?? 0))
+  return map
+}
+
 /* mm_scan_result (MM_SCAN_* in src/input/mpegts.h), named as in
  * scan_result_tab in src/input/mpegts/mpegts_mux.c */
 export const SCAN_RESULT_NONE = 0

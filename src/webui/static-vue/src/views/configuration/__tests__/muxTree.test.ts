@@ -5,6 +5,9 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { clearLocale, switchLocale } from '@/test/__helpers__/switchLocale'
 import {
   buildMuxTree,
+  caidList,
+  servicesByMux,
+  serviceTypeName,
   containsMatch,
   countMuxes,
   exactMatch,
@@ -147,6 +150,27 @@ describe('scan state', () => {
   })
 })
 
+describe('services', () => {
+  it('names the service types and the CA systems', () => {
+    expect(serviceTypeName(0x19)).toBe('HD TV')
+    expect(serviceTypeName(0x02)).toBe('Radio')
+    expect(serviceTypeName(0x86)).toBe('0x86')
+    expect(serviceTypeName(0)).toBe('')
+    expect(caidList('1883:003311,1863:003343,1883:000000')).toBe('1883, 1863')
+    expect(caidList('')).toBe('')
+  })
+
+  it('groups the services by mux, sorted by name', () => {
+    const m = servicesByMux([
+      { uuid: '1', svcname: 'ORF2', sid: 2, multiplex_uuid: 'a' },
+      { uuid: '2', svcname: 'ORF1', sid: 1, multiplex_uuid: 'a' },
+      { uuid: '3', svcname: 'X', sid: 9, multiplex_uuid: 'b' },
+    ])
+    expect(m.get('a')?.map((s) => s.svcname)).toEqual(['ORF1', 'ORF2'])
+    expect(m.get('b')?.length).toBe(1)
+  })
+})
+
 describe('exactMatch', () => {
   /* the server compiles it as an extended regular expression and
    * ignores case: JavaScript reads these the same way */
@@ -178,11 +202,13 @@ describe('containsMatch', () => {
 describe('labels in the language of the UI', () => {
   afterEach(clearLocale)
 
-  it('translates the mux type and the scan result', async () => {
-    await switchLocale({ 'TS (ISI)': 'TS (Eingangsstrom)', 'OK (partial)': 'OK (teilweise)' })
+  it('translates the mux type, the service type and the scan result', async () => {
+    await switchLocale({ 'TS (ISI)': 'TS (Eingangsstrom)', Radio: 'Hörfunk', 'OK (partial)': 'OK (teilweise)' })
     expect(muxTypeName(MUX_TYPE_ISI)).toBe('TS (Eingangsstrom)')
     expect(muxTypeName(0)).toBe('TS')
     expect(muxTypeName(undefined)).toBe('TS')
+    expect(serviceTypeName(0x02)).toBe('Hörfunk')
+    expect(serviceTypeName(0x0a)).toBe('Hörfunk')
     expect(scanResultName(3)).toBe('OK (teilweise)')
     expect(scanResultName(0)).toBe('')
   })

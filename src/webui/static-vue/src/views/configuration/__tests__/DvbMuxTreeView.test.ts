@@ -266,6 +266,85 @@ describe('DvbMuxTreeView columns', () => {
   })
 })
 
+/* rename network n1 (in its mux and service rows too) */
+function renameAstra(s: FakeServer, name: string | undefined) {
+  if (name === undefined) delete s.networks[0].networkname
+  else s.networks[0].networkname = name
+  const shown = name || 'unknown'
+  for (const m of s.muxes) if (m.network_uuid === 'n1') m.network = shown
+  for (const x of s.services) if (x.multiplex_uuid === 'm1') x.network = shown
+}
+
+describe('DvbMuxTreeView services', () => {
+  it('shows the services of a mux below it, with type, SID and streams', async () => {
+    const s = server()
+    s.services[0].streams = 'H.264 1080i, AC-3 deu'
+    s.services[0].encrypted = true
+    s.services[0].caid = '1830:000000,1843:000000'
+    const w = await mountTree(s)
+    await expand(w, 'Astra (1)')
+    await expand(w, '11494H')
+    const row = rowOf(w, 'Das Erste HD')
+    expect(row.text()).toContain('HD TV')
+    expect(row.find('.mux-tree__sid').text()).toBe('10301 · 1830, 1843')
+    expect(row.find('.mux-tree__streams').text()).toBe('H.264 1080i, AC-3 deu')
+    const svcList = String(calls('mpegts/service/grid')[0].list).split(',')
+    expect(svcList).toEqual(expect.arrayContaining(['svcname', 'sid', 'multiplex_uuid', 'network', 'streams']))
+    expect(svcList).not.toContain('source')
+  })
+
+  it('puts the services of a mux with sub-muxes into a row of their own', async () => {
+    const s = server()
+    multistream(s)
+    s.muxes[2].num_svc = 1
+    s.services.push({ uuid: 's2', svcname: 'Stray', sid: 7, network: 'Astra', multiplex_uuid: 't1', enabled: true })
+    const w = await mountTree(s)
+    await expand(w, 'Astra (4)')
+    expect(shows(w, 'Stray')).toBe(false)
+    await expand(w, 'Services (1)')
+    expect(shows(w, 'Stray')).toBe(true)
+  })
+
+  it('finds the services of a network with ( ) in its name', async () => {
+    const s = server()
+    renameAstra(s, 'Astra 1 (19.2E)')
+    const w = await mountTree(s)
+    await expand(w, 'Astra 1 (19.2E)')
+    await expand(w, '11494H')
+    expect(shows(w, 'Das Erste HD')).toBe(true)
+    expect(calls('mpegts/service/grid')[0].filter).toEqual([
+      { type: 'string', field: 'network', value: '^Astra 1 \\(19\\.2E\\)$' },
+    ])
+  })
+
+  it('loads a network without a name, its services by the name the server gives it', async () => {
+    const s = server()
+    renameAstra(s, undefined)
+    const w = await mountTree(s)
+    await expand(w, 'n1')
+    await expand(w, '11494H')
+    expect(shows(w, 'Das Erste HD')).toBe(true)
+    expect(calls('mpegts/service/grid')[0].filter).toEqual([{ type: 'string', field: 'network', value: '^unknown$' }])
+  })
+
+  it('keeps out the services of another network the name filter finds', async () => {
+    const s = server()
+    s.networks.push({ uuid: 'n3', networkname: 'ASTRA', num_mux: 1, num_svc: 1, num_chn: 0 })
+    s.muxes.push({
+      uuid: 'm3', name: '10744H', network: 'ASTRA', network_uuid: 'n3', tstype: 0,
+      num_svc: 1, num_chn: 0, scan_state: 0, enabled: 1,
+    })
+    s.services.push({ uuid: 's3', svcname: 'Other', sid: 1, network: 'ASTRA', multiplex_uuid: 'm3', enabled: true })
+    s.muxes[0].num_svc = 2
+    const w = await mountTree(s)
+    await expand(w, 'ASTRA (1)')
+    await expand(w, 'Astra (1)')
+    await expand(w, '11494H')
+    expect(shows(w, 'Das Erste HD')).toBe(true)
+    expect(shows(w, 'Other')).toBe(false)
+  })
+})
+
 /* the answers of the mux grid wait until released, one by one */
 function holdMuxGrid(s: FakeServer) {
   const held: Array<() => void> = []
@@ -311,6 +390,32 @@ describe('DvbMuxTreeView Reload', () => {
     gate.stop()
     await flushPromises()
     expect(shows(w, '11495H')).toBe(true)
+  })
+
+  it('keeps the services of an open mux and loads them again', async () => {
+    const w = await mountTree()
+    await expand(w, 'Astra (1)')
+    await expand(w, '11494H')
+    expect(shows(w, 'Das Erste HD')).toBe(true)
+    const before = calls('mpegts/service/grid').length
+    await button(w, 'Reload').trigger('click')
+    await flushPromises()
+    expect(calls('mpegts/service/grid')).toHaveLength(before + 1)
+    expect(shows(w, 'Das Erste HD')).toBe(true)
+    expect(w.text()).not.toContain('Loading…')
+  })
+
+  it('loads the services again that failed to load', async () => {
+    const s = server()
+    const w = await mountTree(s)
+    await expand(w, 'Astra (1)')
+    s.gate = (ep) => (ep === 'mpegts/service/grid' ? Promise.reject(new Error('busy')) : undefined)
+    await expand(w, '11494H')
+    expect(w.text()).toContain('Loading…')
+    s.gate = undefined
+    await button(w, 'Reload').trigger('click')
+    await flushPromises()
+    expect(shows(w, 'Das Erste HD')).toBe(true)
   })
 })
 
