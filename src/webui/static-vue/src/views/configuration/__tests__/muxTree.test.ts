@@ -194,6 +194,12 @@ describe('filterTree', () => {
     expect(filterTree(tree, text('ts (isi)')).self.size).toBe(2)
     expect([...filterTree(tree, text('dvb-s2')).self]).toEqual(['t'])
   })
+
+  it('opens a mux for a match among its services', () => {
+    const f = filterTree(tree, () => false, (n) => n.key === 'o')
+    expect(f.show.has('o')).toBe(true)
+    expect(f.open.has('o')).toBe(true)
+  })
 })
 
 describe('exactMatch', () => {

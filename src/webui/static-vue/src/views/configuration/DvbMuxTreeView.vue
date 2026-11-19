@@ -13,6 +13,7 @@
  * The filter finds muxes by name, type, provider network and tuning (all
  * networks are loaded for it) and by state (scan failed, disabled); the
  * rows above a match open.
+ * It optionally looks in the names of the services too.
  *
  * The networks come from `mpegts/network/grid` (all of them: the muxes
  * of an IPTV network have no sub-muxes and are a flat list), the muxes
@@ -54,6 +55,7 @@ import { apiErrorMessage } from '@/utils/apiErrorMessage'
 import {
   buildMuxTree,
   caidList,
+  containsMatch,
   countMuxes,
   exactMatch,
   expandableKeys,
@@ -348,6 +350,7 @@ async function reload() {
   await Promise.all([
     ...networks.value.filter(wanted).map((n) => loadMuxes(n, false)),
     ...[...svcNets.values()].map((n) => loadServices(n)),
+    searchServiceNames(),
   ])
 }
 
@@ -358,7 +361,7 @@ function topNodes(tree: MuxTreeNode[]): MuxTreeNode[] {
   return tree.filter((n) => n.children.length > 0 || n.orphan)
 }
 
-/* Filter: text, state */
+/* Filter: text (muxes, optionally service names), state */
 const filterText = ref('')
 const filterQuery = ref('')
 let filterTimer: number | undefined
@@ -367,10 +370,11 @@ watch(filterText, (v) => {
   filterTimer = window.setTimeout(() => (filterQuery.value = v.trim().toLowerCase()), 250)
 })
 const stateFilter = ref<'all' | 'failed' | 'disabled'>('all')
+const searchServices = ref(false)
 const filterOn = computed(() => filterQuery.value !== '' || stateFilter.value !== 'all')
 onBeforeUnmount(() => window.clearTimeout(filterTimer))
 /* another filter: what it opens is open again */
-watch([filterQuery, stateFilter, onlyWithSubMuxes], () => (filterClosed.value = new Set()))
+watch([filterQuery, stateFilter, searchServices, onlyWithSubMuxes], () => (filterClosed.value = new Set()))
 
 function muxMatches(n: MuxTreeNode): boolean {
   if (filterQuery.value && !muxSearchText(n).includes(filterQuery.value)) return false
@@ -378,23 +382,74 @@ function muxMatches(n: MuxTreeNode): boolean {
   return stateFilter.value === 'failed' ? n.row.scan_result === SCAN_RESULT_FAIL : n.row.enabled !== 1
 }
 
+/* Service names: one search on the server for the text (anywhere in the
+ * name, ignoring case, as the mux filter), the first SERVICE_HITS_MAX
+ * services found by name - not the services of every network */
+const SERVICE_HITS_MAX = 500
+const hitsOn = computed(() => searchServices.value && filterQuery.value !== '')
+/* the services found, by mux uuid */
+const serviceHits = shallowRef(new Map<string, ServiceRow[]>())
+const serviceHitsShown = ref(0)
+const serviceHitsTotal = ref(0)
+
+const searchServiceNames = serialized<void>(fetchServiceHits, () => 'search')
+
+async function fetchServiceHits() {
+  if (!hitsOn.value) {
+    serviceHits.value = new Map()
+    serviceHitsShown.value = serviceHitsTotal.value = 0
+    setLoadError('search')
+    return
+  }
+  try {
+    const grid = await apiCall<GridResponse<ServiceRow> & { total?: number }>('mpegts/service/grid', {
+      start: 0,
+      limit: SERVICE_HITS_MAX,
+      hidemode: 'none',
+      sort: 'svcname',
+      dir: 'ASC',
+      list: SERVICE_FIELDS,
+      filter: [{ type: 'string', field: 'svcname', value: containsMatch(filterQuery.value) }],
+    })
+    const rows = grid.entries ?? []
+    serviceHits.value = servicesByMux(rows)
+    serviceHitsShown.value = rows.length
+    serviceHitsTotal.value = Math.max(grid.total ?? 0, rows.length)
+    setLoadError('search')
+  } catch (e) {
+    setLoadError('search', e)
+  }
+}
+
 const filterResults = computed<Record<string, TreeFilterResult>>(() => {
   const out: Record<string, TreeFilterResult> = {}
   if (!filterOn.value) return out
-  for (const net of networks.value) out[net.uuid] = filterTree(topNodes(trees.value[net.uuid] ?? []), muxMatches)
+  const hits = hitsOn.value ? serviceHits.value : null
+  for (const net of networks.value) {
+    out[net.uuid] = filterTree(topNodes(trees.value[net.uuid] ?? []), muxMatches, (n) =>
+      !!hits && (hits.get(n.row.uuid)?.length ?? 0) > 0,
+    )
+  }
   return out
 })
 
-/* the filter needs all networks */
+/* the filter needs all networks (the services found hang below their
+ * muxes) */
 watch(filterOn, (on) => {
   if (!on) return
   for (const n of networks.value) if (n.numMux > 0 && !trees.value[n.uuid]) void loadMuxes(n, false)
 })
+watch([searchServices, filterQuery], () => void searchServiceNames())
 
 const visible = computed<FlatRow[]>(() => {
   const out: FlatRow[] = []
-  /* the services of a mux (loading: a row that says so) */
-  const serviceList = (net: NetworkEntry, row: MuxRow, depth: number) => {
+  /* the services of a mux (loading: a row that says so); a filter on
+   * service names shows only the ones it found (hits) */
+  const serviceList = (net: NetworkEntry, row: MuxRow, depth: number, hits?: ServiceRow[]) => {
+    if (hits) {
+      for (const svc of hits) out.push({ key: svc.uuid, depth, service: svc, net, hasChildren: false, open: false })
+      return
+    }
     const list = services.value[net.uuid]
     if (!list) {
       out.push({
@@ -411,11 +466,11 @@ const visible = computed<FlatRow[]>(() => {
       out.push({ key: svc.uuid, depth, service: svc, net, hasChildren: false, open: false })
   }
   /* a mux with sub-muxes: its services in a "Services (n)" row */
-  const serviceGroup = (net: NetworkEntry, row: MuxRow, depth: number) => {
+  const serviceGroup = (net: NetworkEntry, row: MuxRow, depth: number, hits?: ServiceRow[]) => {
     const key = `${row.uuid}:services`
-    const open = expanded.value.has(key)
+    const open = (!!hits && !filterClosed.value.has(key)) || expanded.value.has(key)
     out.push({ key, depth, svcGroup: { mux: row, count: row.num_svc ?? 0 }, net, hasChildren: true, open })
-    if (open) serviceList(net, row, depth + 1)
+    if (open) serviceList(net, row, depth + 1, hits)
   }
   const walk = (net: NetworkEntry, nodes: MuxTreeNode[], depth: number, f: TreeFilterResult | null, inMatch: boolean) => {
     for (const node of nodes) {
@@ -427,9 +482,14 @@ const visible = computed<FlatRow[]>(() => {
       out.push({ key: node.key, depth, node, net, hasChildren: node.children.length > 0 || svc, open, wide })
       if (!open) continue
       const self = !!f && f.self.has(node.key)
+      /* opened for a service match: only the services found */
+      const onlyHits = !!f && !inMatch && !self && hitsOn.value
       if (svc) {
-        if (node.children.length) serviceGroup(net, node.row, depth + 1)
-        else serviceList(net, node.row, depth + 1)
+        const hits = onlyHits ? serviceHits.value.get(node.row.uuid) : undefined
+        if (!onlyHits || hits?.length) {
+          if (node.children.length) serviceGroup(net, node.row, depth + 1, hits)
+          else serviceList(net, node.row, depth + 1, hits)
+        }
       }
       walk(net, node.children, depth + 1, f, inMatch || self)
     }
@@ -485,6 +545,11 @@ const index = computed(() => {
     add(trees.value[net.uuid] ?? [])
     for (const list of services.value[net.uuid]?.values() ?? [])
       for (const svc of list) map.set(svc.uuid, { kind: 'service', net })
+  }
+  /* the services found by name: in the network of their mux */
+  for (const [mux, list] of serviceHits.value) {
+    const e = map.get(mux)
+    if (e?.kind === 'mux') for (const svc of list) if (!map.has(svc.uuid)) map.set(svc.uuid, { kind: 'service', net: e.net })
   }
   return map
 })
@@ -569,6 +634,10 @@ onMounted(loadNetworks)
         :placeholder="t('Filter: name, type, provider, tuning')"
         :aria-label="t('Filter')"
       />
+      <label class="mux-tree__check">
+        <input v-model="searchServices" type="checkbox" />
+        {{ t('Also service names') }}
+      </label>
       <select v-model="stateFilter" class="mux-tree__select" :aria-label="t('State')">
         <option value="all">{{ t('All muxes') }}</option>
         <option value="failed">{{ t('Scan failed') }}</option>
@@ -578,6 +647,9 @@ onMounted(loadNetworks)
         <input v-model="onlyWithSubMuxes" type="checkbox" />
         {{ t('Only transponders with sub-muxes') }}
       </label>
+      <span v-if="hitsOn && serviceHitsTotal > serviceHitsShown" class="mux-tree__hits" role="status">
+        {{ t('The first {0} of {1} services found: refine the filter', serviceHitsShown, serviceHitsTotal) }}
+      </span>
     </div>
     <p v-if="loadError" class="mux-tree__error" role="alert">{{ t('Failed to load:') }} {{ loadError }}</p>
     <div class="mux-tree__scroll">
@@ -738,6 +810,11 @@ onMounted(loadNetworks)
   gap: var(--tvh-space-1);
   font-size: var(--tvh-text-sm);
   margin-left: var(--tvh-space-2);
+}
+
+.mux-tree__hits {
+  color: var(--tvh-warning);
+  font-size: var(--tvh-text-sm);
 }
 
 .mux-tree__count {
