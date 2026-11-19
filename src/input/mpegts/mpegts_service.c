@@ -137,6 +137,64 @@ mpegts_service_class_get_type ( void *ptr )
   return &s;
 }
 
+#if ENABLE_MPEGTS_DVB
+/* the name of the mux type, from the list of the DVB mux class */
+static void
+mpegts_service_mux_type_name ( int type, char *buf, size_t len )
+{
+  extern const idclass_t dvb_mux_class;
+  const property_t *p = prop_find(dvb_mux_class.ic_properties, "tstype");
+  htsmsg_t *l = p && p->list ? p->list(NULL, NULL) : NULL;
+  htsmsg_field_t *f;
+  htsmsg_t *e;
+  int64_t key;
+
+  snprintf(buf, len, "%d", type);
+  if (l == NULL)
+    return;
+  HTSMSG_FOREACH(f, l)
+    if ((e = htsmsg_field_get_map(f)) != NULL &&
+        !htsmsg_get_s64(e, "key", &key) && key == type) {
+      strlcpy(buf, htsmsg_get_str(e, "val") ?: buf, len);
+      break;
+    }
+  htsmsg_destroy(l);
+}
+#endif
+
+/* read only, for the service grids: the mux the service comes from, a
+ * sub-mux with its type and input stream */
+static const void *
+mpegts_service_class_get_source ( void *ptr )
+{
+  static char buf[192];
+  static const char *s = buf;
+
+  buf[0] = '\0';
+#if ENABLE_MPEGTS_DVB
+  extern const idclass_t dvb_mux_class;
+  mpegts_mux_t *mm = ((mpegts_service_t *)ptr)->s_dvb_mux;
+
+  if (mm && idnode_is_instance(&mm->mm_id, &dvb_mux_class)) {
+    const dvb_mux_conf_t *dmc = &((dvb_mux_t *)mm)->lm_tuning;
+    const char *label = mm->mm_provider_network_name;
+    char type[32];
+    size_t l = 0;
+
+    mpegts_service_mux_type_name(mm->mm_type, type, sizeof(type));
+    /* a TS: an input stream says what it is, else "TS" */
+    if (strncmp(type, "TS", 2) || dmc->dmc_fe_stream_id < 0)
+      l = snprintf(buf, sizeof(buf), "%s", strncmp(type, "TS", 2) ? type : "TS");
+    if (dmc->dmc_fe_stream_id >= 0 && l < sizeof(buf))
+      l += snprintf(buf + l, sizeof(buf) - l, "%sISI %d", l ? " · " : "",
+                    dmc->dmc_fe_stream_id);
+    if (mm->mm_type != MM_TYPE_TS && label && *label && l < sizeof(buf))
+      snprintf(buf + l, sizeof(buf) - l, " · %s", label);
+  }
+#endif
+  return &s;
+}
+
 /* read only, for the service grids: a short summary of the streams.
  * The short name of a stream type for it, NULL: not listed */
 static const char *
@@ -266,6 +324,16 @@ const idclass_t mpegts_service_class =
       .desc     = N_("The mux's universally unique identifier."),
       .opts     = PO_RDONLY | PO_NOSAVE | PO_HIDDEN | PO_EXPERT,
       .get      = mpegts_service_class_get_mux_uuid,
+    },
+    {
+      .type     = PT_STR,
+      .id       = "source",
+      .name     = N_("Source"),
+      .desc     = N_("Where the service comes from: TS, or the sub-mux "
+                     "of its transponder (an input stream) with its ISI "
+                     "and network."),
+      .opts     = PO_RDONLY | PO_NOSAVE,
+      .get      = mpegts_service_class_get_source,
     },
     {
       .type     = PT_U16,
