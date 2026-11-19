@@ -265,6 +265,8 @@ const cols: ColumnDef[] = [
   /* Read only, computed by the server (mpegts_service.c): the type as
    * clients get it (SDTV, HDTV, UHDTV, Radio, Other). */
   { field: 'type', sortable: true, filterType: 'string', width: 100 },
+  /* A summary of the streams ("H.264 1080 · MP2 ×2, AC-3 · DVB-Sub · TXT"). */
+  { field: 'streams', sortable: true, filterType: 'string', width: 300 },
 
   /* ---- remaining service_class (parent) ---- */
   {

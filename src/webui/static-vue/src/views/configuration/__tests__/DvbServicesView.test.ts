@@ -31,8 +31,10 @@ stubs.resetEachTest()
 const { captured } = stubs
 
 describe('DvbServicesView columns', () => {
-  it('shows the type of the services', () => {
+  it('shows the type and the streams of the services', () => {
     mount(DvbServicesView)
+    const fields = stubs.gridColumns().map((c) => c.field)
+    for (const f of ['type', 'streams']) expect(fields, f).toContain(f)
     expect(stubs.gridColumn('type')?.hiddenByDefault).toBeFalsy()
   })
 
