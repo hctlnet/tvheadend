@@ -12,8 +12,11 @@ on:
       - main
   workflow_dispatch:
 
+# not named after the workflow: webui-vue-build.yml, called below, has a
+# group of that name and the ref, and a run started by hand on a branch
+# would wait for itself
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  group: main-pr-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 env:
