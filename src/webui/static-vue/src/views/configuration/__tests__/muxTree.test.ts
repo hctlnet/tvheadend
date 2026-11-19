@@ -10,8 +10,13 @@ import {
   exactMatch,
   expandableKeys,
   muxTypeName,
+  scanQueued,
+  scanResultName,
   MUX_TYPE_ISI,
   shortName,
+  subMuxScan,
+  subtreeCounts,
+  tuningLabel,
   type MuxRow,
   type MuxTreeNode,
 } from '../muxTree'
@@ -80,6 +85,68 @@ describe('shortName', () => {
   })
 })
 
+describe('subMuxScan', () => {
+  it('counts the sub-muxes of all levels scanned with success', () => {
+    const tree = buildMuxTree([
+      { uuid: 't', name: '10717V', multistream: true, scan_result: 1 },
+      { uuid: 'a', name: '10717V ISI 1', parent_mux: 't', tstype: MUX_TYPE_ISI, stream_id: 1, scan_result: 1 },
+      { uuid: 'b', name: '10717V ISI 2', parent_mux: 't', tstype: MUX_TYPE_ISI, stream_id: 2, scan_result: 2 },
+      { uuid: 'c', name: '10717V ISI 3', parent_mux: 't', tstype: MUX_TYPE_ISI, stream_id: 3, scan_result: 3 },
+    ])
+    expect(subMuxScan(tree[0])).toEqual({ ok: 2, total: 3 })
+    expect(subMuxScan(tree[0].children[0])).toEqual({ ok: 0, total: 0 })
+  })
+})
+
+describe('subtreeCounts', () => {
+  it('adds the services and channels of all levels below a mux', () => {
+    const tree = buildMuxTree([
+      { uuid: 't', name: '12226V', multistream: true, num_svc: 0, num_chn: 0 },
+      { uuid: 'i', name: '12226V ISI 14', parent_mux: 't', tstype: MUX_TYPE_ISI, stream_id: 14, num_svc: 19, num_chn: 2 },
+      { uuid: 'j', name: '12226V ISI 15', parent_mux: 't', tstype: MUX_TYPE_ISI, stream_id: 15, num_svc: 12, num_chn: 1 },
+    ])
+    expect(subtreeCounts(tree[0])).toEqual({ svc: 31, chn: 3 })
+    expect(subtreeCounts(tree[0].children[0])).toEqual({ svc: 19, chn: 2 })
+  })
+})
+
+describe('tuningLabel', () => {
+  it('shows the DVB-S2 tuning, PLS only when scrambled', () => {
+    expect(
+      tuningLabel({
+        uuid: 'a', delsys: 'DVB-S2', modulation: 'PSK/8', fec: '2/3', symbolrate: 31400000,
+        rolloff: '20', pilot: 'ON', pls_mode: 'GOLD', pls_code: 262140,
+      }),
+    ).toBe('DVB-S2 · 8PSK 2/3 · SR 31400 · PLS Gold 262140 · RO 0.20 · Pilot on')
+    expect(
+      tuningLabel({
+        uuid: 'b', delsys: 'DVB-S2', modulation: 'PSK/8', fec: '3/4', symbolrate: 4500000,
+        rolloff: 'NONE', pilot: 'AUTO', pls_mode: 'ROOT', pls_code: 1,
+      }),
+    ).toBe('DVB-S2 · 8PSK 3/4 · SR 4500 · Pilot auto')
+  })
+
+  it('leaves out what DVB-S and DVB-C do not have', () => {
+    expect(
+      tuningLabel({ uuid: 'c', delsys: 'DVB-S', modulation: 'QPSK', fec: '3/4', symbolrate: 27500000, rolloff: '35', pilot: 'AUTO' }),
+    ).toBe('DVB-S · QPSK 3/4 · SR 27500')
+    expect(tuningLabel({ uuid: 'd', delsys: 'DVB-C', constellation: 'QAM/256', fec: 'AUTO', symbolrate: 6900000 })).toBe(
+      'DVB-C · 256QAM · SR 6900',
+    )
+  })
+})
+
+describe('scan state', () => {
+  const row = (scan_state: number, enabled = 1) => ({ uuid: 'm', scan_state, enabled })
+
+  it('counts a queued or running scan, not the idle queue', () => {
+    expect(scanQueued(row(0))).toBe(false)
+    expect(scanQueued(row(1))).toBe(true)
+    expect(scanQueued(row(2))).toBe(false)
+    expect(scanQueued(row(3))).toBe(true)
+  })
+})
+
 describe('exactMatch', () => {
   /* the server compiles it as an extended regular expression and
    * ignores case: JavaScript reads these the same way */
@@ -111,10 +178,12 @@ describe('containsMatch', () => {
 describe('labels in the language of the UI', () => {
   afterEach(clearLocale)
 
-  it('translates the mux type', async () => {
-    await switchLocale({ 'TS (ISI)': 'TS (Eingangsstrom)' })
+  it('translates the mux type and the scan result', async () => {
+    await switchLocale({ 'TS (ISI)': 'TS (Eingangsstrom)', 'OK (partial)': 'OK (teilweise)' })
     expect(muxTypeName(MUX_TYPE_ISI)).toBe('TS (Eingangsstrom)')
     expect(muxTypeName(0)).toBe('TS')
     expect(muxTypeName(undefined)).toBe('TS')
+    expect(scanResultName(3)).toBe('OK (teilweise)')
+    expect(scanResultName(0)).toBe('')
   })
 })

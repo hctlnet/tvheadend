@@ -42,7 +42,15 @@ import {
   exactMatch,
   expandableKeys,
   MUX_FIELDS,
+  MUX_TYPE_TS,
   muxTypeName,
+  scanQueued,
+  scanResultName,
+  SCAN_STATE_ACTIVE,
+  SCAN_STATE_IPEND,
+  subMuxScan,
+  subtreeCounts,
+  tuningLabel,
   type MuxRow,
   type MuxTreeNode,
 } from './muxTree'
@@ -54,6 +62,8 @@ interface NetworkEntry {
   uuid: string
   name: string
   numMux: number
+  numSvc: number
+  numChn: number
 }
 
 interface GridResponse<T> {
@@ -68,6 +78,9 @@ interface FlatRow {
   hasChildren: boolean
   open: boolean
   loading?: boolean
+  /* a network or transponder row: its name uses the type column too (a
+   * transponder: its tuning there) */
+  wide?: boolean
 }
 
 const networks = ref<NetworkEntry[]>([])
@@ -135,6 +148,8 @@ async function fetchNetworks() {
         uuid: String(r.uuid),
         name: String(r.networkname ?? r.uuid),
         numMux: Number(r.num_mux ?? 0),
+        numSvc: Number(r.num_svc ?? 0),
+        numChn: Number(r.num_chn ?? 0),
       }))
       .sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }))
     networksLoaded.value = true
@@ -254,14 +269,15 @@ const visible = computed<FlatRow[]>(() => {
   const walk = (nodes: MuxTreeNode[], depth: number) => {
     for (const node of nodes) {
       const open = expanded.value.has(node.key)
-      out.push({ key: node.key, depth, node, hasChildren: node.children.length > 0, open })
+      const wide = depth === 1 && !node.orphan && (node.row.tstype ?? MUX_TYPE_TS) === MUX_TYPE_TS
+      out.push({ key: node.key, depth, node, hasChildren: node.children.length > 0, open, wide })
       if (!open) continue
       walk(node.children, depth + 1)
     }
   }
   for (const net of networks.value) {
     const open = expanded.value.has(net.uuid)
-    out.push({ key: net.uuid, depth: 0, network: net, hasChildren: net.numMux > 0, open })
+    out.push({ key: net.uuid, depth: 0, network: net, hasChildren: net.numMux > 0, open, wide: true })
     if (!open) continue
     if (loadingNets.value.has(net.uuid) && !trees.value[net.uuid])
       out.push({ key: `${net.uuid}:loading`, depth: 1, hasChildren: false, open: false, loading: true })
@@ -273,6 +289,44 @@ const visible = computed<FlatRow[]>(() => {
 const muxTotal = computed(() =>
   Object.values(trees.value).reduce((n, tree) => n + countMuxes(tree), 0),
 )
+
+/* queued or scanning: in place of the result (the idle queue: next to it) */
+function scanStateLabel(row: MuxRow): string {
+  if (!scanQueued(row)) return ''
+  return row.scan_state === SCAN_STATE_ACTIVE ? t('scanning…') : t('queued')
+}
+
+function enabledLabel(row: MuxRow): string {
+  if (row.enabled === 0) return t('disabled')
+  if (row.enabled === -1) return t('ignored')
+  return ''
+}
+
+/* the full name, the provider network and the tuning */
+function nameTitle(r: FlatRow): string | undefined {
+  if (r.network) return r.network.name
+  const row = r.node?.row
+  if (!row) return undefined
+  return [row.name, r.wide ? tuningLabel(row) : '', row.pnetwork_name].filter(Boolean).join(' — ')
+}
+
+/* Services and Channels: a mux with sub-muxes counts all levels below */
+function countLabel(node: MuxTreeNode, what: 'svc' | 'chn'): string {
+  if (!node.children.length) return String((what === 'svc' ? node.row.num_svc : node.row.num_chn) ?? '')
+  return String(subtreeCounts(node)[what])
+}
+
+function countTitle(node: MuxTreeNode, what: 'svc' | 'chn'): string | undefined {
+  if (!node.children.length) return undefined
+  const own = (what === 'svc' ? node.row.num_svc : node.row.num_chn) ?? 0
+  const all = subtreeCounts(node)[what]
+  return t('{0} own + {1} in sub-muxes', own, all - own)
+}
+
+function scanSummary(node: MuxTreeNode): string {
+  const s = subMuxScan(node)
+  return `${s.ok}/${s.total}`
+}
 
 function indent(depth: number): Record<string, string> {
   return { paddingLeft: `calc(${depth} * 1.25rem + var(--tvh-space-2))` }
@@ -315,11 +369,17 @@ onMounted(loadNetworks)
         <colgroup>
           <col />
           <col class="mux-tree__col-type" />
+          <col class="mux-tree__col-scan" />
+          <col class="mux-tree__col-count" />
+          <col class="mux-tree__col-count" />
         </colgroup>
         <thead>
           <tr>
             <th class="mux-tree__name">{{ t('Name') }}</th>
             <th>{{ t('Type') }}</th>
+            <th>{{ t('Scan result') }}</th>
+            <th class="mux-tree__num">{{ t('Services') }}</th>
+            <th class="mux-tree__num">{{ t('Channels') }}</th>
           </tr>
         </thead>
         <tbody>
@@ -329,9 +389,16 @@ onMounted(loadNetworks)
             class="mux-tree__row"
             :class="{
               'mux-tree__row--network': !!r.network,
+              'mux-tree__row--off': !!r.node && r.node.row.enabled !== 1,
             }"
           >
-            <td class="mux-tree__name" :style="indent(r.depth)" :title="r.network?.name ?? r.node?.row.name">
+            <!-- network and transponder rows: the name uses the columns before the scan result -->
+            <td
+              class="mux-tree__name"
+              :colspan="r.wide ? 2 : undefined"
+              :style="indent(r.depth)"
+              :title="nameTitle(r)"
+            >
               <button
                 v-if="r.hasChildren"
                 type="button"
@@ -357,9 +424,42 @@ onMounted(loadNetworks)
                 <span v-else class="mux-tree__muted">–</span>
                 <span v-if="r.node.row.multistream" class="mux-tree__badge">{{ t('multistream') }}</span>
                 <span v-if="r.node.orphan" class="mux-tree__badge mux-tree__badge--warn">{{ t('transponder missing') }}</span>
+                <span v-if="enabledLabel(r.node.row)" class="mux-tree__badge">{{ enabledLabel(r.node.row) }}</span>
+                <span v-if="r.wide" class="mux-tree__tuning">{{ tuningLabel(r.node.row) }}</span>
+                <!-- after the tuning of a transponder, after the name of a sub-mux -->
+                <span v-if="r.node.row.pnetwork_name" class="mux-tree__provider">
+                  {{ r.node.row.pnetwork_name }}
+                </span>
               </template>
             </td>
-            <td>{{ r.node ? muxTypeName(r.node.row.tstype) : '' }}</td>
+            <template v-if="r.node">
+              <td v-if="!r.wide">{{ muxTypeName(r.node.row.tstype) }}</td>
+              <td>
+                <span v-if="scanStateLabel(r.node.row)" class="mux-tree__busy">
+                  {{ scanStateLabel(r.node.row) }}
+                </span>
+                <template v-else>{{ scanResultName(r.node.row.scan_result) }}</template>
+                <span
+                  v-if="r.node.row.scan_state === SCAN_STATE_IPEND"
+                  class="mux-tree__muted"
+                  :title="t('In the idle scan queue of the network; a scan asked for here goes first')"
+                >
+                  · {{ t('idle queue') }}
+                </span>
+                <span v-if="r.node.children.length" class="mux-tree__muted" :title="t('Sub-muxes scanned with success')">
+                  · {{ scanSummary(r.node) }}
+                </span>
+              </td>
+              <td class="mux-tree__num" :title="countTitle(r.node, 'svc')">{{ countLabel(r.node, 'svc') }}</td>
+              <td class="mux-tree__num" :title="countTitle(r.node, 'chn')">{{ countLabel(r.node, 'chn') }}</td>
+            </template>
+            <template v-else-if="r.network">
+              <td>
+              </td>
+              <td class="mux-tree__num">{{ r.network.numSvc }}</td>
+              <td class="mux-tree__num">{{ r.network.numChn }}</td>
+            </template>
+            <td v-else colspan="4" />
           </tr>
         </tbody>
       </table>
@@ -420,7 +520,7 @@ onMounted(loadNetworks)
 /* fixed column widths: expanding a node does not move the columns */
 .mux-tree__table {
   width: 100%;
-  min-width: 480px;
+  min-width: 900px;
   table-layout: fixed;
   border-collapse: collapse;
   font-size: var(--tvh-text-sm);
@@ -430,11 +530,23 @@ onMounted(loadNetworks)
   width: 88px;
 }
 
+.mux-tree__col-scan {
+  width: 128px;
+}
+
+.mux-tree__col-count {
+  width: 78px;
+}
+
 .mux-tree__sep {
   width: 1px;
   height: 1.4rem;
   background: var(--tvh-border);
   margin: 0 var(--tvh-space-1);
+}
+
+.mux-tree__busy {
+  color: var(--tvh-primary);
 }
 
 .mux-tree__table th {
@@ -459,6 +571,25 @@ onMounted(loadNetworks)
   text-overflow: ellipsis;
 }
 
+/* after the general th rule: numeric headers align with their values */
+.mux-tree__table th.mux-tree__num {
+  text-align: right;
+}
+
+.mux-tree__provider {
+  margin-left: var(--tvh-space-2);
+  color: var(--tvh-text-muted);
+  font-weight: normal;
+}
+
+.mux-tree__tuning {
+  margin-left: var(--tvh-space-3);
+  color: var(--tvh-text-muted);
+  font-size: var(--tvh-text-xs);
+  font-weight: normal;
+  font-variant-numeric: tabular-nums;
+}
+
 .mux-tree__table tbody tr {
   cursor: default;
   user-select: none;
@@ -468,8 +599,17 @@ onMounted(loadNetworks)
   background: color-mix(in srgb, var(--tvh-primary) var(--tvh-hover-strength), transparent);
 }
 
+.mux-tree__num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
 .mux-tree__row--network td {
   font-weight: 600;
+}
+
+.mux-tree__row--off td {
+  color: var(--tvh-text-muted);
 }
 
 .mux-tree__toggle,
