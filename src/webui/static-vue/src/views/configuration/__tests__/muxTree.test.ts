@@ -1,11 +1,15 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Tvheadend contributors
 
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it } from 'vitest'
+import { clearLocale, switchLocale } from '@/test/__helpers__/switchLocale'
 import {
   buildMuxTree,
+  containsMatch,
   countMuxes,
+  exactMatch,
   expandableKeys,
+  muxTypeName,
   MUX_TYPE_ISI,
   shortName,
   type MuxRow,
@@ -73,5 +77,44 @@ describe('shortName', () => {
     expect(shortName('12226V', '12226V')).toBe('12226V')
     expect(shortName('12226V ISI 14', undefined)).toBe('12226V ISI 14')
     expect(shortName('11727V ISI 1', '12226V')).toBe('11727V ISI 1')
+  })
+})
+
+describe('exactMatch', () => {
+  /* the server compiles it as an extended regular expression and
+   * ignores case: JavaScript reads these the same way */
+  const names = ['Astra 1 (19.2E)', 'HD+ (19.2E)', 'Hotbird [13E]', 'DVB-S [Dish 1', 'Kabel\\Wien', 'A|B', 'x{1,2}^$*?']
+
+  it('finds the text itself, all of it', () => {
+    expect(exactMatch('Astra 1 (19.2E)')).toBe('^Astra 1 \\(19\\.2E\\)$')
+    for (const n of names) {
+      const re = new RegExp(exactMatch(n), 'i')
+      expect(re.test(n), n).toBe(true)
+      expect(re.test(`${n} 2`), n).toBe(false)
+      expect(re.test(`x${n}`), n).toBe(false)
+    }
+  })
+
+  it('leaves a uuid as it is, between the anchors', () => {
+    expect(exactMatch('0123456789abcdef0123456789abcdef')).toBe('^0123456789abcdef0123456789abcdef$')
+  })
+})
+
+describe('containsMatch', () => {
+  it('finds the text anywhere', () => {
+    const re = new RegExp(containsMatch('2 (w'), 'i')
+    expect(re.test('ORF 2 (W)')).toBe(true)
+    expect(re.test('ORF 2 W')).toBe(false)
+  })
+})
+
+describe('labels in the language of the UI', () => {
+  afterEach(clearLocale)
+
+  it('translates the mux type', async () => {
+    await switchLocale({ 'TS (ISI)': 'TS (Eingangsstrom)' })
+    expect(muxTypeName(MUX_TYPE_ISI)).toBe('TS (Eingangsstrom)')
+    expect(muxTypeName(0)).toBe('TS')
+    expect(muxTypeName(undefined)).toBe('TS')
   })
 })

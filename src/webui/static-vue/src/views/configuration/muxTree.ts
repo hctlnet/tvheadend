@@ -9,8 +9,10 @@
  * only); the depth is not limited here.
  *
  * Pure functions, no Vue: the view (DvbMuxTreeView.vue) renders the
- * nodes and keeps the expanded state.
+ * nodes and keeps the expanded state. The labels go through the static
+ * `t()`.
  */
+import { t } from '@/composables/useI18n'
 
 /* the fields of an `api/mpegts/mux/grid` row the tree uses */
 export interface MuxRow {
@@ -43,6 +45,28 @@ export interface MuxTreeNode {
 /* mm_type, MM_TYPE_* in src/input/mpegts.h */
 export const MUX_TYPE_TS = 0
 export const MUX_TYPE_ISI = 7
+
+/* the type as the tree shows it */
+const TYPE_LABELS: Record<number, () => string> = {
+  [MUX_TYPE_TS]: () => t('TS'),
+  [MUX_TYPE_ISI]: () => t('TS (ISI)'),
+}
+
+export function muxTypeName(type: number | undefined): string {
+  return TYPE_LABELS[type ?? MUX_TYPE_TS]?.() ?? t('type {0}', type)
+}
+
+/* a string filter of the grids is a case-insensitive extended regular
+ * expression on the server (`idnode_filter_add_str`): the one that finds
+ * exactly this text */
+export function exactMatch(text: string): string {
+  return `^${containsMatch(text)}$`
+}
+
+/* ... and the one that finds the text anywhere */
+export function containsMatch(text: string): string {
+  return text.replace(/[.[\]()*+?{}|^$\\]/g, '\\$&')
+}
 
 /* an input stream of its own */
 function isInputStream(row: MuxRow): boolean {
