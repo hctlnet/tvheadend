@@ -627,6 +627,10 @@ linuxdvb_frontend_is_enabled
     return MI_IS_ENABLED_NEVER;
   if (mm == NULL)
     return MI_IS_ENABLED_OK;
+  /* a multistream transponder as a whole: a tuner delivers the TS of one
+   * input stream, the streams are tuned themselves (MM_TYPE_ISI) */
+  if (idnode_is_instance(&mm->mm_id, &dvb_mux_class) && ((dvb_mux_t *)mm)->lm_multistream)
+    return MI_IS_ENABLED_NEVER;
   if (lfe->lfe_in_setup)
     return MI_IS_ENABLED_RETRY;
   if (lfe->lfe_type != DVB_TYPE_S)

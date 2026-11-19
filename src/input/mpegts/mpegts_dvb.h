@@ -51,6 +51,12 @@ typedef struct dvb_mux
   char *lm_parent;
 
   /*
+   * A multistream transponder (DVB-S2): it has the tuning, its input
+   * streams are its sub-muxes (MM_TYPE_ISI)
+   */
+  int lm_multistream;
+
+  /*
    * Frequencies for Mapping
    */
   uint32_t mm_dvb_satip_dvbt_freq;
@@ -130,5 +136,7 @@ extern const idclass_t dvb_mux_class;
 dvb_mux_t *dvb_mux_submux_parent ( dvb_mux_t *sm );
 void       dvb_mux_submux_link   ( dvb_mux_t *sm, const dvb_mux_t *parent );
 int        dvb_mux_submux_sync   ( dvb_mux_t *sm );
+void       dvb_network_link_multistream ( dvb_network_t *ln );
+dvb_mux_t *dvb_mux_multistream_transponder ( dvb_network_t *ln, const dvb_mux_t *lm );
 
 #endif /* __TVH_MPEGTS_DVB_H__ */
