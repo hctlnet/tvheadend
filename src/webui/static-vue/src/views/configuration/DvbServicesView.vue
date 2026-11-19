@@ -267,6 +267,14 @@ const cols: ColumnDef[] = [
   { field: 'type', sortable: true, filterType: 'string', width: 100 },
   /* A summary of the streams ("H.264 1080 · MP2 ×2, AC-3 · DVB-Sub · TXT"). */
   { field: 'streams', sortable: true, filterType: 'string', width: 300 },
+  {
+    field: 'hbbtv',
+    sortable: true,
+    filterType: 'boolean',
+    width: 100,
+    cellComponent: BooleanCell,
+    hiddenByDefault: true,
+  },
 
   /* ---- remaining service_class (parent) ---- */
   {
@@ -332,6 +340,23 @@ const cols: ColumnDef[] = [
   { field: 'source', sortable: true, filterType: 'string', width: 240 },
   { field: 'multiplex_uuid', sortable: true, filterType: 'string', width: 280, editable: true },
   { field: 'sid', sortable: true, filterType: 'numeric', width: 100, editable: true },
+  /* The DVB ids of the mux, with the SID the triplet (-1: not known). */
+  {
+    field: 'onid',
+    sortable: true,
+    filterType: 'numeric',
+    width: 110,
+    hiddenByDefault: true,
+    format: (v: unknown) => (typeof v === 'number' && v >= 0 ? String(v) : ''),
+  },
+  {
+    field: 'tsid',
+    sortable: true,
+    filterType: 'numeric',
+    width: 110,
+    hiddenByDefault: true,
+    format: (v: unknown) => (typeof v === 'number' && v >= 0 ? String(v) : ''),
+  },
   { field: 'lcn', sortable: true, filterType: 'numeric', width: 110, editable: true },
   { field: 'lcn_minor', sortable: true, filterType: 'numeric', width: 110, editable: true },
   { field: 'lcn2', sortable: true, filterType: 'numeric', width: 110, editable: true },

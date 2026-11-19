@@ -289,6 +289,34 @@ mpegts_service_class_get_streams ( void *ptr )
   return &s;
 }
 
+/* read only, for the service grids: the DVB ids of the mux, HbbTV */
+static const void *
+mpegts_service_class_get_onid ( void *ptr )
+{
+  static int v;
+  mpegts_mux_t *mm = ((mpegts_service_t *)ptr)->s_dvb_mux;
+  v = mm && mm->mm_onid != MPEGTS_ONID_NONE ? (int)mm->mm_onid : -1;
+  return &v;
+}
+
+static const void *
+mpegts_service_class_get_tsid ( void *ptr )
+{
+  static int v;
+  mpegts_mux_t *mm = ((mpegts_service_t *)ptr)->s_dvb_mux;
+  v = mm && mm->mm_tsid != MPEGTS_TSID_NONE ? (int)mm->mm_tsid : -1;
+  return &v;
+}
+
+static const void *
+mpegts_service_class_get_hbbtv ( void *ptr )
+{
+  static int v;
+  service_t *t = ptr;
+  v = t->s_hbbtv != NULL && !htsmsg_is_empty(t->s_hbbtv);
+  return &v;
+}
+
 CLASS_DOC(mpegts_service)
 PROP_DOC(eit_processing)
 
@@ -342,6 +370,24 @@ const idclass_t mpegts_service_class =
       .desc     = N_("The service ID as set by the provider."),
       .opts     = PO_RDONLY | PO_ADVANCED,
       .off      = offsetof(mpegts_service_t, s_components.set_service_id),
+    },
+    {
+      .type     = PT_INT,
+      .id       = "onid",
+      .name     = N_("Original network ID"),
+      .desc     = N_("The original network ID of the mux of the service "
+                     "(-1: not known)."),
+      .opts     = PO_RDONLY | PO_NOSAVE | PO_HIDDEN,
+      .get      = mpegts_service_class_get_onid,
+    },
+    {
+      .type     = PT_INT,
+      .id       = "tsid",
+      .name     = N_("Transport stream ID"),
+      .desc     = N_("The transport stream ID of the mux of the service "
+                     "(-1: not known)."),
+      .opts     = PO_RDONLY | PO_NOSAVE | PO_HIDDEN,
+      .get      = mpegts_service_class_get_tsid,
     },
     {
       .type     = PT_U16,
@@ -401,6 +447,14 @@ const idclass_t mpegts_service_class =
                      "teletext."),
       .opts     = PO_RDONLY | PO_NOSAVE,
       .get      = mpegts_service_class_get_streams,
+    },
+    {
+      .type     = PT_BOOL,
+      .id       = "hbbtv",
+      .name     = N_("HbbTV"),
+      .desc     = N_("The service has HbbTV applications."),
+      .opts     = PO_RDONLY | PO_NOSAVE | PO_HIDDEN,
+      .get      = mpegts_service_class_get_hbbtv,
     },
     {
       .type     = PT_STR,
