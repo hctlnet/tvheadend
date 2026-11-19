@@ -669,3 +669,55 @@ describe('DvbMuxTreeView selection', () => {
     expect(stubs.toast.error).toHaveBeenCalledWith('Failed to delete: in use')
   })
 })
+
+/* the saves fail */
+function failSaves(s: FakeServer) {
+  s.gate = (ep) => (ep === 'idnode/save' ? Promise.reject(new Error('session expired')) : undefined)
+}
+
+describe('DvbMuxTreeView "On" box', () => {
+  const onBox = (w: Wrapper, text: string) => rowOf(w, text).findAll('td.mux-tree__select-cell input')[1]
+
+  it('disables a mux and a service at once', async () => {
+    const w = await mountTree()
+    await expand(w, 'Astra (1)')
+    await expand(w, '11494H')
+    await onBox(w, '11494H').trigger('click')
+    await flushPromises()
+    expect(JSON.parse(String(calls('idnode/save')[0].node))).toEqual({ uuid: 'm1', enabled: 0 })
+    expect(rowOf(w, '11494H').classes()).toContain('mux-tree__row--off')
+    await onBox(w, 'Das Erste HD').trigger('click')
+    await flushPromises()
+    expect(JSON.parse(String(calls('idnode/save')[1].node))).toEqual({ uuid: 's1', enabled: false })
+  })
+
+  it('enables an ignored mux by a click', async () => {
+    const s = server()
+    s.muxes[0].enabled = -1
+    const w = await mountTree(s)
+    await expand(w, 'Astra (1)')
+    expect((onBox(w, '11494H').element as HTMLInputElement).indeterminate).toBe(true)
+    await onBox(w, '11494H').trigger('click')
+    await flushPromises()
+    expect(JSON.parse(String(calls('idnode/save')[0].node))).toEqual({ uuid: 'm1', enabled: 1 })
+  })
+
+  it('takes back a click whose save fails, and says so', async () => {
+    const s = server()
+    const w = await mountTree(s)
+    await expand(w, 'Astra (1)')
+    await expand(w, '11494H')
+    failSaves(s)
+    const before = calls('mpegts/mux/grid').length
+    await onBox(w, '11494H').trigger('click')
+    await flushPromises()
+    expect((onBox(w, '11494H').element as HTMLInputElement).checked).toBe(true)
+    expect(rowOf(w, '11494H').classes()).not.toContain('mux-tree__row--off')
+    expect(stubs.toast.error).toHaveBeenCalledWith('Failed to save: session expired')
+    /* and the network as the server has it */
+    expect(calls('mpegts/mux/grid').length).toBeGreaterThan(before)
+    await onBox(w, 'Das Erste HD').trigger('click')
+    await flushPromises()
+    expect((onBox(w, 'Das Erste HD').element as HTMLInputElement).checked).toBe(true)
+  })
+})
