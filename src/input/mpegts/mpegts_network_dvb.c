@@ -540,6 +540,9 @@ dvb_network_find_mux
 
   LIST_FOREACH(mm, &ln->mn_muxes, mm_network_link) {
 
+    /* a sub-mux shares the tuning of its transponder */
+    if (mpegts_mux_is_submux(mm)) continue;
+
     if (check && mm->mm_enabled != MM_ENABLE) continue;
 
     deltaf = 2000; // 2K/MHz
@@ -644,6 +647,8 @@ dvb_network_find_overlap
     return NULL;
   pls = dvb_sat_pls(dmc);
   LIST_FOREACH(mm, &ln->mn_muxes, mm_network_link) {
+    /* a sub-mux shares the tuning of its transponder */
+    if (mpegts_mux_is_submux(mm)) continue;
     if (mm->mm_onid != onid || mm->mm_tsid != tsid) continue;
     if (ignored ? mm->mm_enabled != MM_IGNORE :
                   (mm->mm_enabled != MM_ENABLE || !MM_SCAN_CHECK_OK(mm))) continue;
@@ -996,12 +1001,14 @@ dvb_network_create0
 
   /* Load muxes */
   if ((c = hts_settings_load_r(1, "input/dvb/networks/%s/muxes", uuid))) {
+    ln->ln_loading = 1;
     HTSMSG_FOREACH(f, c) {
       if (!(e = htsmsg_get_map_by_field(f)))  continue;
       if (!(e = htsmsg_get_map(e, "config"))) continue;
       lm = dvb_mux_create1(ln, htsmsg_field_name(f), e);
       mpegts_mux_post_create((mpegts_mux_t *)lm);
     }
+    ln->ln_loading = 0;
     htsmsg_destroy(c);
   }
 

@@ -410,6 +410,17 @@ enum mpegts_mux_enable
   MM_ENABLE  =  1,
 };
 
+enum mpegts_mux_type
+{
+  MM_TYPE_TS       = 0,  /* Standard transport stream (default) */
+  MM_TYPE_ISI      = 7,  /* the TS of one input stream of a multistream transponder */
+};
+
+/* a mux carried inside another one: an input stream of a multistream
+ * transponder (in its BBFrames) */
+#define mpegts_mux_in_bbframes(mm) ((mm)->mm_type == MM_TYPE_ISI)
+#define mpegts_mux_is_submux(mm)   (mpegts_mux_in_bbframes(mm))
+
 enum mpegts_mux_epg_flag
 {
   MM_EPG_DISABLE,
@@ -533,6 +544,7 @@ struct mpegts_mux
    * Configuration
    */
   char    *mm_crid_authority;
+  int      mm_type;       /* mpegts_mux_type */
   int      mm_enabled;
   int      mm_epg;
   char    *mm_epg_module_id;
@@ -688,6 +700,8 @@ struct mpegts_input
   int mi_streaming_priority;
 
   int mi_ota_epg;
+
+  uint32_t mi_mux_types; /* bit per mpegts_mux_type this input delivers */
 
   int mi_initscan;
   int mi_idlescan;

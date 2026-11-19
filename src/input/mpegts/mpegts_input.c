@@ -368,6 +368,11 @@ int
 mpegts_input_is_enabled
   ( mpegts_input_t *mi, mpegts_mux_t *mm, int flags, int weight )
 {
+  /* a mux of a type the input does not deliver; without a mux: the state
+   * of the input itself (adapter tree) */
+  if (mm && (mm->mm_type < 0 || mm->mm_type >= 32 ||
+             !(mi->mi_mux_types & (1u << mm->mm_type))))
+    return MI_IS_ENABLED_NEVER;
   if ((flags & SUBSCRIPTION_EPG) != 0 && !mi->mi_ota_epg)
     return MI_IS_ENABLED_NEVER;
   if ((flags & SUBSCRIPTION_USERSCAN) == 0) {
@@ -2080,6 +2085,7 @@ mpegts_input_create0
   
   /* Defaults */
   mi->mi_is_enabled           = mpegts_input_is_enabled;
+  mi->mi_mux_types            = 1u << MM_TYPE_TS;
   mi->mi_display_name         = mpegts_input_display_name;
   mi->mi_get_weight           = mpegts_input_get_weight;
   mi->mi_get_priority         = mpegts_input_get_priority;
