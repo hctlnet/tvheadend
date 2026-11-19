@@ -169,7 +169,9 @@ api_mpegts_network_scan
 /*
  * One more input stream of a multistream transponder: uuid (the mux of the
  * transponder, or one of its input streams), stream_id. Answers with the
- * uuid of the mux of the stream.
+ * uuid of the mux of the stream, or with "error"; and with "services" when
+ * the mux has services and would not be tuned any more as a transponder:
+ * that is done with force=1 only.
  */
 static int
 api_mpegts_mux_add_stream
@@ -181,7 +183,7 @@ api_mpegts_mux_add_stream
   dvb_mux_t *sm = NULL;
   char ubuf[UUID_HEX_SIZE];
   int64_t stream;
-  int r = 0;
+  int r = 0, services = 0;
 
   if (!(uuid = htsmsg_get_str(args, "uuid")) ||
       htsmsg_get_s64(args, "stream_id", &stream))
@@ -195,12 +197,16 @@ api_mpegts_mux_add_stream
   else if (stream < 0 || stream > 255)
     err = "an input stream has a number from 0 to 255";
   else
-    sm = dvb_mux_add_stream((dvb_mux_t *)mm, (int)stream, &err);
+    sm = dvb_mux_add_stream((dvb_mux_t *)mm, (int)stream,
+                            htsmsg_get_u32_or_default(args, "force", 0) != 0,
+                            &err, &services);
   *resp = htsmsg_create_map();
   if (sm)
     htsmsg_add_str(*resp, "uuid", idnode_uuid_as_str(&sm->mm_id, ubuf));
   else if (err)
     htsmsg_add_str(*resp, "error", err);
+  if (services)
+    htsmsg_add_u32(*resp, "services", services);
   tvh_mutex_unlock(&global_lock);
   if (r) {
     htsmsg_destroy(*resp);
