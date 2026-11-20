@@ -123,6 +123,8 @@ typedef struct dvb_mux
 #define DVB_MUX_TUNING_LOCKED 1 ///< a tune with them locked
 #define DVB_MUX_TUNING_READ   2 ///< read from the demodulator at a lock
 
+/* the PID the Neumo driver embeds the BBFrames of all input streams in */
+#define DVB_BBFRAMES_PID 0x10e
 
 /*
  * Network
