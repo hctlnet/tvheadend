@@ -233,6 +233,20 @@ const idclass_t dvb_network_class =
   .ic_caption    = N_("LinuxDVB network"),
   .ic_delete     = dvb_network_class_delete,
   .ic_properties = (const property_t[]){
+#if ENABLE_DVBDAB
+    {
+      .type     = PT_BOOL,
+      .id       = "dab_probe",
+      .name     = N_("Search DAB ensembles"),
+      .desc     = N_("While a mux of this network is scanned, look for DAB "
+                     "ensembles carried in it (ETI-NA, MPE, TS NI) and add "
+                     "a mux for each one. The whole mux is received during "
+                     "the scan; off by default."),
+      .off      = offsetof(dvb_network_t, ln_dab_probe),
+      .def.i    = 0,
+      .opts     = PO_ADVANCED,
+    },
+#endif
     {}
   }
 };
@@ -703,6 +717,27 @@ dvb_network_find_submux
     if (dvb_network_submux_match(mm, dmc, type))
       return (dvb_mux_t *)mm;
   return NULL;
+}
+
+dvb_mux_t *
+dvb_network_find_mux_dab_mpe
+  ( dvb_network_t *ln, const dvb_mux_conf_t *dmc )
+{
+  return dvb_network_find_submux(ln, dmc, MM_TYPE_DAB_MPE);
+}
+
+dvb_mux_t *
+dvb_network_find_mux_dab_eti
+  ( dvb_network_t *ln, const dvb_mux_conf_t *dmc )
+{
+  return dvb_network_find_submux(ln, dmc, MM_TYPE_DAB_ETI);
+}
+
+dvb_mux_t *
+dvb_network_find_mux_dab_tsni
+  ( dvb_network_t *ln, const dvb_mux_conf_t *dmc )
+{
+  return dvb_network_find_submux(ln, dmc, MM_TYPE_DAB_TSNI);
 }
 
 /*

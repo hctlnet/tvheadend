@@ -493,6 +493,7 @@ struct mpegts_mux
   int                      mm_scan_weight;  ///< Scan priority
   int                      mm_scan_flags;   ///< Subscription flags
   int                      mm_scan_init;    ///< Flag to timeout handler
+  int                      mm_scan_submux_ok; ///< A sub-mux was read while this scan ran
   mtimer_t                 mm_scan_timeout; ///< Timer to handle timeout
   TAILQ_ENTRY(mpegts_mux)  mm_scan_link;    ///< Link to Queue
   mpegts_mux_scan_state_t  mm_scan_state;   ///< Scanning state
@@ -537,6 +538,18 @@ struct mpegts_mux
   TAILQ_HEAD(, descrambler_emm) mm_descrambler_emms;
   tvh_mutex_t                 mm_descrambler_lock;
   int                         mm_descrambler_flush;
+
+  /*
+   * Secondary scanning (DAB probe): gets all packets of the mux while it
+   * is set (the input thread, mi_output_lock)
+   */
+  void                       *mm_secondary_ctx;
+  void (*mm_secondary_cb)(void *ctx, const uint8_t *pkt, int len);
+
+  /*
+   * DAB probe context (the DAB ensembles carried in the mux)
+   */
+  void                       *mm_dab_probe_ctx;
 
   /*
    * Functions
@@ -1244,8 +1257,16 @@ void eit_sdt_callback(mpegts_table_t *mt, uint32_t priv);
  * DAB (libdvbdab; without it no DAB muxes)
  */
 #if ENABLE_DVBDAB
+void mpegts_dab_probe_start(mpegts_mux_t *mm);
+int  mpegts_dab_probe_complete(mpegts_mux_t *mm, int evaluate);
+int  mpegts_dab_probe_wait(mpegts_mux_t *mm, int result, int weight);
+int  mpegts_dab_probe_waiting(mpegts_mux_t *mm);
 int  dvb_mux_set_dab_ensemble(mpegts_mux_t *mm, const char *label);
 #else
+#define mpegts_dab_probe_start(mm)              ((void)0)
+#define mpegts_dab_probe_complete(mm, evaluate) (0)
+#define mpegts_dab_probe_wait(mm, result, weight) (0)
+#define mpegts_dab_probe_waiting(mm)              (0)
 #define dvb_mux_set_dab_ensemble(mm, label)     (0)
 #endif
 

@@ -259,6 +259,35 @@ mpegts_network_scan_submuxes ( mpegts_mux_t *mm, int weight )
         dvb_mux_submux_parent((dvb_mux_t *)sm) == (dvb_mux_t *)mm)
       mpegts_network_scan_queue_add(sm, SUBSCRIPTION_PRIO_SCAN_INIT, flags, 10);
 }
+
+/* A sub-mux was read: so was its transponder. A transponder without tables
+ * of its own (a DAB feed in IP packets) fails its own scan when its DAB
+ * probe did not run, e.g. it was tuned for a sub-mux; it is OK then. While
+ * its own scan runs, the end of that scan takes it (mm_scan_submux_ok). */
+static void
+mpegts_network_scan_parent_ok ( mpegts_mux_t *sm )
+{
+  mpegts_mux_t *p;
+
+  if (!mpegts_mux_is_submux(sm) || !idnode_is_instance(&sm->mm_id, &dvb_mux_class))
+    return;
+  p = (mpegts_mux_t *)dvb_mux_submux_parent((dvb_mux_t *)sm);
+  if (p == NULL)
+    return;
+  if (p->mm_scan_state == MM_SCAN_STATE_ACTIVE) {
+    p->mm_scan_submux_ok = 1;
+    return;
+  }
+  if (p->mm_scan_result != MM_SCAN_FAIL)
+    return;
+  tvhinfo(LS_MPEGTS, "mux %s: scan result OK (sub-mux %s read)",
+          p->mm_nicename, sm->mm_nicename);
+  p->mm_scan_result = MM_SCAN_OK;
+  p->mm_scan_last_seen = gclk();
+  if (p->mm_scan_first == 0)
+    p->mm_scan_first = p->mm_scan_last_seen;
+  idnode_changed(&p->mm_id);
+}
 #endif
 
 /* Finished */
@@ -271,6 +300,30 @@ mpegts_network_scan_mux_done0
   int scan_weight = mm->mm_scan_weight;   /* of the scan that ends */
 #endif
   mpegts_mux_scan_state_t state = mm->mm_scan_state;
+  int dab_found;
+
+  /* The DAB data come slower than the tables of a scan: a scan that ended
+   * (not a cancelled one) waits for the probe, for a while at most */
+  if (result != MM_SCAN_NONE && mpegts_dab_probe_wait(mm, result, weight))
+    return;
+
+  /* Complete DAB probe before finishing scan: its findings only count for a
+   * scan that ended - not when it was cancelled (the mux stopped, deleted,
+   * or its tuner taken), the mux may be going away */
+  dab_found = mpegts_dab_probe_complete(mm, result != MM_SCAN_NONE);
+
+  /* Override result if the probe found DAB ensembles */
+  if (dab_found > 0 && result == MM_SCAN_FAIL) {
+    result = MM_SCAN_OK;
+    tvhinfo(LS_MPEGTS, "mux %s: scan result upgraded to OK (DAB found)", mm->mm_nicename);
+  }
+
+  /* a sub-mux of it was read while this scan ran */
+  if (mm->mm_scan_submux_ok && result == MM_SCAN_FAIL) {
+    result = MM_SCAN_OK;
+    tvhinfo(LS_MPEGTS, "mux %s: scan result upgraded to OK (a sub-mux read)", mm->mm_nicename);
+  }
+  mm->mm_scan_submux_ok = 0;
 
   if (result == MM_SCAN_OK || result == MM_SCAN_PARTIAL) {
     mm->mm_scan_last_seen = gclk();
@@ -336,7 +389,18 @@ mpegts_network_scan_mux_done0
   /* the transponder could be read: its sub-muxes get a scan as well */
   if (result == MM_SCAN_OK || result == MM_SCAN_PARTIAL)
     mpegts_network_scan_submuxes(mm, scan_weight);
+  /* a sub-mux could be read: its transponder too */
+  if (result == MM_SCAN_OK || result == MM_SCAN_PARTIAL)
+    mpegts_network_scan_parent_ok(mm);
 #endif
+}
+
+/* The end of a scan that was put off */
+void
+mpegts_network_scan_mux_end
+  ( mpegts_mux_t *mm, mpegts_mux_scan_result_t result, int weight )
+{
+  mpegts_network_scan_mux_done0(mm, result, weight);
 }
 
 /* Failed - couldn't start */
@@ -390,6 +454,9 @@ mpegts_network_scan_mux_active ( mpegts_mux_t *mm )
   mm->mm_scan_state = MM_SCAN_STATE_ACTIVE;
   mm->mm_scan_init  = 0;
   TAILQ_INSERT_TAIL(&mn->mn_scan_active, mm, mm_scan_link);
+
+  /* Start DAB probe in parallel with SI scanning */
+  mpegts_dab_probe_start(mm);
 }
 
 /* Mux has been reactivated */
