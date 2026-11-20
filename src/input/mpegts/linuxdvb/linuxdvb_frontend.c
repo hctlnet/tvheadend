@@ -31,6 +31,7 @@
 #include <unistd.h>
 #include <fcntl.h>
 #include <assert.h>
+#include <poll.h>
 #include <linux/dvb/dmx.h>
 #include <linux/dvb/frontend.h> 
 
@@ -1758,6 +1759,7 @@ linuxdvb_frontend_monitor ( void *aux )
       tvhdebug(LS_LINUXDVB, "%s - locked", buf);
       lfe->lfe_locked = 1;
       int params_read = 0, blind = 0;
+
 #if ENABLE_LINUXDVB_NEUMO
       /* the MATYPE is valid a while after the lock */
       lfe->lfe_stream_info = mclk() + sec2mono(2);

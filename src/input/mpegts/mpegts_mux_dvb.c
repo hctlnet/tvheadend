@@ -146,7 +146,7 @@ dvb_mux_class_dab_ip_opts(void *o, uint32_t opts)
   (void) opts;
   if (mm == NULL)
     return PO_HIDDEN;
-  if (mm->mm_type == MM_TYPE_DAB_MPE)
+  if (mm->mm_type == MM_TYPE_DAB_MPE || mm->mm_type == MM_TYPE_DAB_GSE)
     return 0;
   return PO_NOUI | PO_NOSAVE;
 }
