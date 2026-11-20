@@ -415,15 +415,25 @@ enum mpegts_mux_type
 {
   MM_TYPE_TS       = 0,  /* Standard transport stream (default) */
   MM_TYPE_T2MI     = 1,  /* T2-MI or TS piping in a PID (the TS of a DVB-T2 PLP, ...) */
+  MM_TYPE_DAB_MPE  = 2,  /* DAB via MPE (IP multicast in MPE sections) */
+  MM_TYPE_DAB_ETI  = 3,  /* DAB via ETI-NA (direct ETI encapsulation) */
+  MM_TYPE_DAB_TSNI = 6,  /* DAB via TS NI V.11 (incrementing table_id 0x69-0x9A) */
   MM_TYPE_ISI      = 7,  /* the TS of one input stream of a multistream transponder */
 };
 
-/* a mux carried inside another one: in a PID of its transponder (T2MI), or
- * an input stream of a multistream transponder (in its BBFrames) */
-#define mpegts_mux_in_pid(mm)      ((mm)->mm_type == MM_TYPE_T2MI)
+/* a mux carried inside another one: in a PID of its transponder (T2MI,
+ * DAB), or an input stream of a multistream transponder (in its BBFrames) */
+#define mpegts_mux_in_pid(mm) \
+  ((mm)->mm_type == MM_TYPE_T2MI || (mm)->mm_type == MM_TYPE_DAB_MPE || \
+   (mm)->mm_type == MM_TYPE_DAB_ETI || (mm)->mm_type == MM_TYPE_DAB_TSNI)
 #define mpegts_mux_in_bbframes(mm) ((mm)->mm_type == MM_TYPE_ISI)
 #define mpegts_mux_is_submux(mm) \
   (mpegts_mux_in_pid(mm) || mpegts_mux_in_bbframes(mm))
+
+/* a DAB ensemble converted to a TS (libdvbdab) */
+#define mpegts_mux_is_dab(mm) \
+  ((mm)->mm_type == MM_TYPE_DAB_MPE || (mm)->mm_type == MM_TYPE_DAB_ETI || \
+   (mm)->mm_type == MM_TYPE_DAB_TSNI)
 
 enum mpegts_mux_epg_flag
 {
@@ -1210,6 +1220,15 @@ extern LIST_HEAD(mpegts_listeners, mpegts_listener) mpegts_listeners;
  */
 void eit_nit_callback(mpegts_table_t *mt, uint16_t nbid, const char *name, uint32_t priv);
 void eit_sdt_callback(mpegts_table_t *mt, uint32_t priv);
+
+/*
+ * DAB (libdvbdab; without it no DAB muxes)
+ */
+#if ENABLE_DVBDAB
+int  dvb_mux_set_dab_ensemble(mpegts_mux_t *mm, const char *label);
+#else
+#define dvb_mux_set_dab_ensemble(mm, label)     (0)
+#endif
 
 #endif /* __TVH_MPEGTS_H__ */
 

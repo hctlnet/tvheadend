@@ -31,6 +31,7 @@
 #include <dirent.h>
 #include <fcntl.h>
 #include <math.h>
+#include <arpa/inet.h>
 
 /* **************************************************************************
  * Class definition
@@ -131,7 +132,119 @@ dvb_mux_class_delsys_set (void *o, const void *v)
 }
 
 /*
- * Mux type: a sub-mux is carried in its transponder (T2MI: in a PID of it)
+ * DAB fields only for their mux type: not in the editor of other muxes, not
+ * saved for them (PO_HIDDEN alone only hides a grid column, the forms show
+ * it). In the class schema (o == NULL: grid columns, the add form) they are
+ * columns hidden by default.
+ */
+static uint32_t
+dvb_mux_class_dab_ip_opts(void *o, uint32_t opts)
+{
+  const mpegts_mux_t *mm = o;
+  (void) opts;
+  if (mm == NULL)
+    return PO_HIDDEN;
+  if (mm->mm_type == MM_TYPE_DAB_MPE)
+    return 0;
+  return PO_NOUI | PO_NOSAVE;
+}
+
+static uint32_t
+dvb_mux_class_dab_opts(void *o, uint32_t opts)
+{
+  const mpegts_mux_t *mm = o;
+  if (mm == NULL)
+    return opts | PO_HIDDEN;
+  if (mpegts_mux_is_dab(mm))
+    return opts;
+  return opts | PO_NOUI | PO_NOSAVE;
+}
+
+static uint32_t
+dvb_mux_class_dab_eti_opts(void *o, uint32_t opts)
+{
+  const mpegts_mux_t *mm = o;
+  (void) opts;
+  if (mm == NULL)
+    return PO_HIDDEN;
+  if (mm->mm_type == MM_TYPE_DAB_ETI)
+    return 0;
+  return PO_NOUI | PO_NOSAVE;
+}
+
+/*
+ * DAB UDP port: a PT_U32, as PT_U16 would cut a value to 16 bits before
+ * the setter sees it
+ */
+static const void *
+dvb_mux_class_dab_port_get(void *o)
+{
+  static uint32_t port;
+  const dvb_mux_t *lm = o;
+
+  port = lm->lm_tuning.dmc_dab_port;
+  return &port;
+}
+
+static int
+dvb_mux_class_dab_port_set(void *o, const void *v)
+{
+  dvb_mux_t *lm = o;
+  uint32_t port = *(const uint32_t *)v;
+
+  /* above 65535: refused, the port is kept */
+  if (port > 0xffff || port == lm->lm_tuning.dmc_dab_port)
+    return 0;
+  lm->lm_tuning.dmc_dab_port = port;
+  return 1;
+}
+
+/*
+ * DAB IP address get/set helpers (string <-> uint32)
+ */
+static const void *
+dvb_mux_class_dab_ip_get(void *o)
+{
+  static char buf[32];
+  static char *s;
+  const dvb_mux_t *lm = o;
+  uint32_t ip = lm->lm_tuning.dmc_dab_ip;
+
+  s = buf;
+  if (ip == 0)
+    buf[0] = '\0';
+  else
+    snprintf(buf, sizeof(buf), "%u.%u.%u.%u",
+             (ip >> 24) & 0xFF, (ip >> 16) & 0xFF,
+             (ip >> 8) & 0xFF, ip & 0xFF);
+  return &s;
+}
+
+static int
+dvb_mux_class_dab_ip_set(void *o, const void *v)
+{
+  dvb_mux_t *lm = o;
+  const char *s = v;
+  struct in_addr in;
+  uint32_t ip = 0;
+
+  /* empty: no address (0); anything but an IPv4 address is refused */
+  if (s && *s) {
+    if (inet_pton(AF_INET, s, &in) != 1)
+      return 0;
+    ip = ntohl(in.s_addr);
+  }
+
+  if (ip != lm->lm_tuning.dmc_dab_ip) {
+    lm->lm_tuning.dmc_dab_ip = ip;
+    return 1;
+  }
+  return 0;
+}
+
+/*
+ * Mux type: a sub-mux is carried in its transponder (T2MI, DAB: in a PID of
+ * it)
  */
 static htsmsg_t *
 dvb_mux_class_type_list ( void *o, const char *lang )
@@ -140,6 +253,11 @@ dvb_mux_class_type_list ( void *o, const char *lang )
     { N_("TS"),                       MM_TYPE_TS },
     { N_("TS (input stream)"),        MM_TYPE_ISI },
     { N_("T2MI"),                     MM_TYPE_T2MI },
+#if ENABLE_DVBDAB
+    { N_("DAB-MPE"),                  MM_TYPE_DAB_MPE },
+    { N_("DAB-ETI"),                  MM_TYPE_DAB_ETI },
+    { N_("DAB-TSNI"),                 MM_TYPE_DAB_TSNI },
+#endif
   };
   (void) o;
   return strtab2htsmsg(tab, 1, lang);
@@ -243,7 +361,8 @@ const idclass_t dvb_mux_class =
       .desc     = N_("Transport stream type: TS (standard), or a sub-mux "
                      "that follows the tuning of its transponder: the TS of "
                      "one input stream of a DVB-S2 multistream transponder, "
-                     "or T2MI (a TS carried in a PID: T2-MI or TS piping)."),
+                     "T2MI (a TS carried in a PID: T2-MI or TS piping) or "
+                     "a DAB ensemble carried in a PID."),
       .off      = offsetof(mpegts_mux_t, mm_type),
       .def.i    = MM_TYPE_TS,
       .list     = dvb_mux_class_type_list,
@@ -254,7 +373,7 @@ const idclass_t dvb_mux_class =
       .id       = "pid",
       .name     = N_("Stream PID"),
       .desc     = N_("The PID of the transponder the stream of the sub-mux "
-                     "is carried in (T2MI)."),
+                     "is carried in (T2MI, DAB)."),
       .off      = offsetof(dvb_mux_t, lm_tuning.dmc_fe_pid),
       .get_opts = dvb_mux_class_stream_pid_opts,
     },
@@ -311,6 +430,57 @@ const idclass_t dvb_mux_class =
       .list     = dvb_mux_class_t2mi_format_list,
       .opts     = PO_ADVANCED | PO_DOC_NLIST,
       .get_opts = dvb_mux_class_t2mi_opts,
+    },
+    {
+      .type     = PT_STR,
+      .id       = "dab_ensemble",
+      .name     = N_("Ensemble"),
+      .desc     = N_("The label of the DAB ensemble, from the scan."),
+      .off      = offsetof(dvb_mux_t, lm_dab_ensemble),
+      .opts     = PO_RDONLY,
+      .get_opts = dvb_mux_class_dab_opts,
+    },
+    {
+      .type     = PT_STR,
+      .id       = "dab_ip",
+      .name     = N_("DAB IP"),
+      .desc     = N_("Multicast IP address for DAB-MPE."),
+      .get      = dvb_mux_class_dab_ip_get,
+      .set      = dvb_mux_class_dab_ip_set,
+      .get_opts = dvb_mux_class_dab_ip_opts,
+    },
+    {
+      .type     = PT_U32,
+      .id       = "dab_port",
+      .name     = N_("DAB Port"),
+      .desc     = N_("UDP port for DAB-MPE."),
+      .get      = dvb_mux_class_dab_port_get,
+      .set      = dvb_mux_class_dab_port_set,
+      .get_opts = dvb_mux_class_dab_ip_opts,
+    },
+    {
+      .type     = PT_INT,
+      .id       = "dab_eti_padding",
+      .name     = N_("ETI Padding"),
+      .desc     = N_("Leading 0xFF bytes in ETI-NA."),
+      .off      = offsetof(dvb_mux_t, lm_tuning.dmc_dab_eti_padding),
+      .get_opts = dvb_mux_class_dab_eti_opts,
+    },
+    {
+      .type     = PT_INT,
+      .id       = "dab_eti_offset",
+      .name     = N_("ETI Bit Offset"),
+      .desc     = N_("Bit position of E1 sync in ETI-NA."),
+      .off      = offsetof(dvb_mux_t, lm_tuning.dmc_dab_eti_bit_offset),
+      .get_opts = dvb_mux_class_dab_eti_opts,
+    },
+    {
+      .type     = PT_BOOL,
+      .id       = "dab_eti_inverted",
+      .name     = N_("ETI Inverted"),
+      .desc     = N_("Signal is bit-inverted in ETI-NA."),
+      .off      = offsetof(dvb_mux_t, lm_tuning.dmc_dab_eti_inverted),
+      .get_opts = dvb_mux_class_dab_eti_opts,
     },
     {}
   }
@@ -1312,7 +1482,7 @@ const idclass_t dvb_mux_dab_class =
  * *************************************************************************/
 
 /*
- * A sub-mux is carried in a transponder (in a PID of it: T2MI; an input
+ * A sub-mux is carried in a transponder (in a PID of it: T2MI, DAB; an input
  * stream of a multistream transponder) and has its tuning. It keeps the uuid
  * of the transponder and follows its tuning when that changes (NIT, the
  * user): at its save, and when the sub-mux starts. All with global_lock.
@@ -1457,7 +1627,12 @@ dvb_mux_conf_same ( const dvb_mux_conf_t *a, const dvb_mux_conf_t *b )
       a->dmc_fe_data_slice != b->dmc_fe_data_slice ||
       a->dmc_fe_pid != b->dmc_fe_pid ||
       a->dmc_t2mi_plp != b->dmc_t2mi_plp ||
-      a->dmc_t2mi_plp_set != b->dmc_t2mi_plp_set)
+      a->dmc_t2mi_plp_set != b->dmc_t2mi_plp_set ||
+      a->dmc_dab_ip != b->dmc_dab_ip ||
+      a->dmc_dab_port != b->dmc_dab_port ||
+      a->dmc_dab_eti_padding != b->dmc_dab_eti_padding ||
+      a->dmc_dab_eti_bit_offset != b->dmc_dab_eti_bit_offset ||
+      a->dmc_dab_eti_inverted != b->dmc_dab_eti_inverted)
     return 0;
   switch (a->dmc_fe_type) {
   case DVB_TYPE_S:
@@ -1481,7 +1656,7 @@ dvb_mux_conf_same ( const dvb_mux_conf_t *a, const dvb_mux_conf_t *b )
 }
 
 /* the tuning of the transponder, except what makes this a sub-mux (its
- * stream, its PID and PLP); 1 = changed */
+ * stream, its PID and PLP, where its DAB ensemble is); 1 = changed */
 int
 dvb_mux_submux_sync ( dvb_mux_t *sm )
 {
@@ -1496,6 +1671,11 @@ dvb_mux_submux_sync ( dvb_mux_t *sm )
   dmc.dmc_fe_pid = sm->lm_tuning.dmc_fe_pid;
   dmc.dmc_t2mi_plp = sm->lm_tuning.dmc_t2mi_plp;
   dmc.dmc_t2mi_plp_set = sm->lm_tuning.dmc_t2mi_plp_set;
+  dmc.dmc_dab_ip = sm->lm_tuning.dmc_dab_ip;
+  dmc.dmc_dab_port = sm->lm_tuning.dmc_dab_port;
+  dmc.dmc_dab_eti_padding = sm->lm_tuning.dmc_dab_eti_padding;
+  dmc.dmc_dab_eti_bit_offset = sm->lm_tuning.dmc_dab_eti_bit_offset;
+  dmc.dmc_dab_eti_inverted = sm->lm_tuning.dmc_dab_eti_inverted;
   if (dvb_mux_conf_same(&dmc, &sm->lm_tuning))
     return 0;
   tvhinfo(LS_MPEGTS, "%s: tuning of the transponder %s taken over",
@@ -1561,24 +1741,98 @@ dvb_mux_config_save ( mpegts_mux_t *mm, char *filename, size_t fsize )
 /*
  * The name of a sub-mux is the name of what carries it, then one part for
  * it: "ISI <n>" for an input stream, "T2MI <PID>[ PLP <n>]" for a T2-MI
- * stream. The type is not in the name (it has a field of its own).
+ * stream, the ensemble for DAB. The type is not in the name (it has a field
+ * of its own).
  */
+
+/* where a DAB ensemble is in what carries it: the PID (ETI-NA, TS NI), the
+ * IP address and port (MPE) */
+static void
+dvb_mux_dab_address ( mpegts_mux_t *mm, char *buf, size_t len )
+{
+  const dvb_mux_conf_t *dmc = &((dvb_mux_t *)mm)->lm_tuning;
+  uint32_t ip = dmc->dmc_dab_ip;
+
+  if (mm->mm_type == MM_TYPE_DAB_MPE)
+    snprintf(buf, len, "%u.%u.%u.%u:%u",
+             (ip >> 24) & 0xFF, (ip >> 16) & 0xFF, (ip >> 8) & 0xFF, ip & 0xFF,
+             dmc->dmc_dab_port);
+  else
+    snprintf(buf, len, "PID %u", dmc->dmc_fe_pid);
+}
+
+/* another ensemble of the same name in the same carrier (the same
+ * transponder, or input stream in it): the two need their address */
+static int
+dvb_mux_dab_named_twice ( mpegts_mux_t *mm )
+{
+  dvb_mux_t *lm = (dvb_mux_t *)mm, *p, *ls;
+  mpegts_mux_t *s;
+
+  if ((p = dvb_mux_submux_parent(lm)) == NULL)
+    return 0;
+  LIST_FOREACH(s, &mm->mm_network->mn_muxes, mm_network_link) {
+    if (s == mm || !mpegts_mux_is_dab(s))
+      continue;
+    ls = (dvb_mux_t *)s;
+    if (ls->lm_dab_ensemble && !strcmp(ls->lm_dab_ensemble, lm->lm_dab_ensemble) &&
+        dvb_mux_submux_parent(ls) == p)
+      return 1;
+  }
+  return 0;
+}
+
+/* " ISI <n>", " T2MI <PID>[ PLP <n>]", " <ensemble>[ (<address>)]",
+ * " DAB <address>" */
 static void
 dvb_mux_submux_name ( mpegts_mux_t *mm, char *buf, size_t len )
 {
-  const dvb_mux_conf_t *dmc = &((dvb_mux_t *)mm)->lm_tuning;
+  dvb_mux_t *lm = (dvb_mux_t *)mm;
+  const dvb_mux_conf_t *dmc = &lm->lm_tuning;
   size_t l = strlen(buf);
+  char addr[32];
 
   if (!mpegts_mux_is_submux(mm) || l + 1 >= len)
     return;
   buf += l;
   len -= l;
-  if (mm->mm_type == MM_TYPE_ISI)
+  if (mm->mm_type == MM_TYPE_ISI) {
     snprintf(buf, len, " ISI %d", dmc->dmc_fe_stream_id);
-  else if (mm->mm_type == MM_TYPE_T2MI && dmc->dmc_t2mi_plp_set)
-    snprintf(buf, len, " T2MI %u PLP %u", dmc->dmc_fe_pid, dmc->dmc_t2mi_plp);
-  else if (mm->mm_type == MM_TYPE_T2MI)
-    snprintf(buf, len, " T2MI %u", dmc->dmc_fe_pid);
+  } else if (mm->mm_type == MM_TYPE_T2MI) {
+    if (dmc->dmc_t2mi_plp_set)
+      snprintf(buf, len, " T2MI %u PLP %u", dmc->dmc_fe_pid, dmc->dmc_t2mi_plp);
+    else
+      snprintf(buf, len, " T2MI %u", dmc->dmc_fe_pid);
+  } else if (mpegts_mux_is_dab(mm)) {
+    dvb_mux_dab_address(mm, addr, sizeof(addr));
+    /* before the first scan: where the ensemble is */
+    if (lm->lm_dab_ensemble == NULL || *lm->lm_dab_ensemble == '\0')
+      snprintf(buf, len, " DAB %s", addr);
+    else if (dvb_mux_dab_named_twice(mm))
+      snprintf(buf, len, " %s (%s)", lm->lm_dab_ensemble, addr);
+    else
+      snprintf(buf, len, " %s", lm->lm_dab_ensemble);
+  }
+}
+
+/* the ensembles of a name in a network: one more or one less of them
+ * changes whether they need their address. Only a name that changes is
+ * replaced: the threads of a running ensemble read it without a lock. */
+static void
+dvb_network_dab_rename ( mpegts_network_t *mn, const char *label )
+{
+  mpegts_mux_t *s;
+  char buf[256];
+
+  if (label == NULL || *label == '\0')
+    return;
+  LIST_FOREACH(s, &mn->mn_muxes, mm_network_link)
+    if (mpegts_mux_is_dab(s) && ((dvb_mux_t *)s)->lm_dab_ensemble &&
+        !strcmp(((dvb_mux_t *)s)->lm_dab_ensemble, label)) {
+      mpegts_mux_nice_name(s, buf, sizeof(buf));
+      if (s->mm_nicename == NULL || strcmp(s->mm_nicename, buf))
+        mpegts_mux_update_nice_name(s);
+    }
 }
 
 static void
@@ -1590,8 +1844,8 @@ dvb_mux_display_name ( mpegts_mux_t *mm, char *buf, size_t len )
   char extra[8], buf2[5], *p;
   dvb_mux_t *parent;
 
-  /* a sub-mux in a sub-mux (a T2-MI stream in an input stream): the name
-   * of the sub-mux it is in, then what tells it apart */
+  /* a sub-mux in a sub-mux (a T2-MI stream or a DAB ensemble in an input
+   * stream): the name of the sub-mux it is in, then what tells it apart */
   if (mpegts_mux_in_pid(mm) && (parent = dvb_mux_submux_parent(lm)) != NULL &&
       mpegts_mux_is_submux((mpegts_mux_t *)parent)) {
     dvb_mux_display_name((mpegts_mux_t *)parent, buf, len);
@@ -1628,12 +1882,44 @@ dvb_mux_display_name ( mpegts_mux_t *mm, char *buf, size_t len )
   dvb_mux_submux_name(mm, buf, len);
 }
 
+#if ENABLE_DVBDAB
+/*
+ * The label of a DAB ensemble: from the probe, or from the provider of the
+ * services in the SDT of the converted TS (libdvbdab) - global_lock
+ */
+int
+dvb_mux_set_dab_ensemble ( mpegts_mux_t *mm, const char *label )
+{
+  dvb_mux_t *lm = (dvb_mux_t *)mm;
+  char *old;
+
+  if (!mpegts_mux_is_dab(mm) || label == NULL || *label == '\0' ||
+      !strcmp(lm->lm_dab_ensemble ?: "", label))
+    return 0;
+  old = lm->lm_dab_ensemble ? strdup(lm->lm_dab_ensemble) : NULL;
+  tvh_str_update(&lm->lm_dab_ensemble, label);
+  mpegts_mux_update_nice_name(mm);
+  dvb_network_dab_rename(mm->mm_network, old);
+  dvb_network_dab_rename(mm->mm_network, label);
+  free(old);
+  idnode_changed(&mm->mm_id);
+  return 1;
+}
+#endif
+
 static void
 dvb_mux_delete ( mpegts_mux_t *mm, int delconf )
 {
   char ubuf1[UUID_HEX_SIZE];
   char ubuf2[UUID_HEX_SIZE];
   dvb_mux_t *t = NULL;
+  mpegts_network_t *mn = mm->mm_network;
+  char *label = NULL;
+
+  /* an ensemble of the same name may not need its address any more (not
+   * when the muxes are unloaded) */
+  if (delconf && mpegts_mux_is_dab(mm) && ((dvb_mux_t *)mm)->lm_dab_ensemble)
+    label = strdup(((dvb_mux_t *)mm)->lm_dab_ensemble);
 
   /* Remove config */
   if (delconf)
@@ -1646,8 +1932,8 @@ dvb_mux_delete ( mpegts_mux_t *mm, int delconf )
     dvb_mux_submux_sync((dvb_mux_t *)mm);
 
   /* the sub-muxes of a transponder go with it, and those of an input
-   * stream (a T2-MI stream in it): left behind, a sub-mux would keep its
-   * link to a mux that is gone */
+   * stream (a T2-MI stream, DAB ensembles in a PID): left behind, a sub-mux
+   * would keep its link to a mux that is gone */
   if (!mpegts_mux_in_pid(mm)) {
     mpegts_mux_t *sub;
     while ((sub = dvb_mux_first_submux((dvb_mux_t *)mm)) != NULL)
@@ -1669,12 +1955,20 @@ dvb_mux_delete ( mpegts_mux_t *mm, int delconf )
     tvhinfo(LS_MPEGTS, "%s: no input streams left, not a multistream transponder any more",
             t->mm_nicename);
   }
+
+  if (label) {
+    dvb_network_dab_rename(mn, label);
+    free(label);
+  }
 }
 
 static void
 dvb_mux_free ( mpegts_mux_t *mm )
 {
-  free(((dvb_mux_t *)mm)->lm_parent);
+  dvb_mux_t *lm = (dvb_mux_t *)mm;
+
+  free(lm->lm_parent);
+  free(lm->lm_dab_ensemble);
   mpegts_mux_free(mm);
 }
 
@@ -1762,6 +2056,9 @@ dvb_mux_create0
   lm->mm_config_save      = dvb_mux_config_save;
 
   mpegts_mux_update_nice_name(mm);
+  /* another ensemble of its name gets its address */
+  if (mpegts_mux_is_dab(mm))
+    dvb_network_dab_rename((mpegts_network_t *)ln, lm->lm_dab_ensemble);
 
   /* No config */
   if (!conf) return lm;
@@ -1894,6 +2191,9 @@ dvb_mux_multistream_transponder ( dvb_network_t *ln, const dvb_mux_t *lm )
   if (t == NULL) {
     memcpy(&dmc, &lm->lm_tuning, sizeof(dmc));
     dmc.dmc_fe_stream_id = DVB_NO_STREAM_ID_FILTER;
+    dmc.dmc_fe_pid = 0;
+    dmc.dmc_dab_ip = 0;
+    dmc.dmc_dab_port = 0;
     /* not queued for a scan (mpegts_mux_post_create()): its input streams
      * are there and scanned, and no tuner takes the transponder itself */
     t = dvb_mux_create0(ln, MPEGTS_ONID_NONE, MPEGTS_TSID_NONE, &dmc, NULL, NULL);

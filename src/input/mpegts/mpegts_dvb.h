@@ -45,6 +45,11 @@ typedef struct dvb_mux
   dvb_mux_conf_t lm_tuning;
 
   /*
+   * DAB: label of the ensemble (from the scan)
+   */
+  char *lm_dab_ensemble;
+
+  /*
    * A sub-mux: the uuid of the transponder it is carried in, whose tuning
    * it follows (dvb_mux_submux_sync())
    */
@@ -118,7 +123,7 @@ dvb_mux_t *dvb_network_find_mux
   ( dvb_network_t *ln, dvb_mux_conf_t *dmc, uint32_t onid, uint32_t tsid, int check, int approx_match );
 
 /* the sub-mux of this type on the same transponder, in the same PID (T2MI:
- * of the PLP, if one is set) */
+ * of the PLP, if one is set; DAB-MPE: from the same IP source) */
 dvb_mux_t *dvb_network_find_submux
   ( dvb_network_t *ln, const dvb_mux_conf_t *dmc, int type );
 
