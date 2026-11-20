@@ -20,6 +20,7 @@
  * networks are loaded for it) and by state (scan failed, disabled); the
  * rows above a match open.
  * It optionally looks in the names of the services too.
+ * The "On" box of a row enables a mux or service at once.
  *
  * The networks come from `mpegts/network/grid` (all of them: the muxes
  * of an IPTV network have no sub-muxes and are a flat list), the muxes
@@ -44,6 +45,7 @@ import {
   onMounted,
   ref,
   shallowRef,
+  triggerRef,
   watch,
 } from 'vue'
 import { useRouter } from 'vue-router'
@@ -773,6 +775,56 @@ async function onDelete() {
   }
 }
 
+/* In the rows: enable. The change shows at once; when its save fails,
+ * the old value is back and the network reloads. */
+async function saveFields(uuid: string, fields: Record<string, unknown>): Promise<boolean> {
+  try {
+    await apiCall('idnode/save', { node: JSON.stringify({ uuid, ...fields }) })
+    return true
+  } catch (e) {
+    toast.error(`${t('Failed to save')}: ${apiErrorMessage(e)}`)
+    return false
+  }
+}
+
+/* the muxes of the network of a row as the server has them */
+function reloadNetworkOf(row: MuxRow) {
+  const net = networkOf(row)
+  if (net) void loadMuxes(net, false)
+}
+
+/* "On": a mux 1/0 (-1 = ignore: half set, a click enables it), a service */
+function enabledState(r: FlatRow): 'on' | 'off' | 'ignore' | null {
+  if (r.service) return r.service.enabled === false ? 'off' : 'on'
+  const row = r.node?.row
+  if (!row) return null
+  return row.enabled === 1 ? 'on' : row.enabled === -1 ? 'ignore' : 'off'
+}
+
+async function toggleEnabled(r: FlatRow) {
+  if (r.service) {
+    const svc = r.service
+    const old = svc.enabled
+    svc.enabled = old === false
+    triggerRef(services)
+    triggerRef(serviceHits)
+    if (await saveFields(svc.uuid, { enabled: svc.enabled })) return
+    svc.enabled = old
+    triggerRef(services)
+    triggerRef(serviceHits)
+    if (r.net) refreshServices(r.net)
+  } else if (r.node) {
+    const row = r.node.row
+    const old = row.enabled
+    row.enabled = old === 1 ? 0 : 1
+    triggerRef(trees)
+    if (await saveFields(row.uuid, { enabled: row.enabled })) return
+    row.enabled = old
+    triggerRef(trees)
+    reloadNetworkOf(row)
+  }
+}
+
 /* queued or scanning: in place of the result (the idle queue: next to it) */
 function scanStateLabel(row: MuxRow): string {
   if (!scanQueued(row)) return ''
@@ -895,6 +947,7 @@ onMounted(loadNetworks)
           <col class="mux-tree__col-scan" />
           <col class="mux-tree__col-count" />
           <col class="mux-tree__col-count" />
+          <col class="mux-tree__col-on" />
         </colgroup>
         <thead>
           <tr>
@@ -912,6 +965,7 @@ onMounted(loadNetworks)
             <th>{{ t('Scan result') }}</th>
             <th class="mux-tree__num">{{ t('Services') }}</th>
             <th class="mux-tree__num">{{ t('Channels') }}</th>
+            <th class="mux-tree__select-cell" :title="t('Enabled')">{{ t('On') }}</th>
           </tr>
         </thead>
         <tbody>
@@ -1028,6 +1082,18 @@ onMounted(loadNetworks)
               <td class="mux-tree__num">{{ r.network.numChn }}</td>
             </template>
             <td v-else colspan="5" />
+            <td class="mux-tree__select-cell">
+              <input
+                v-if="enabledState(r)"
+                type="checkbox"
+                :checked="enabledState(r) === 'on'"
+                :indeterminate="enabledState(r) === 'ignore'"
+                :title="enabledState(r) === 'ignore' ? t('Ignored: a click enables it') : t('Enabled')"
+                :aria-label="t('Enabled')"
+                @click.stop="toggleEnabled(r)"
+                @dblclick.stop
+              />
+            </td>
           </tr>
         </tbody>
       </table>
@@ -1144,6 +1210,10 @@ onMounted(loadNetworks)
 
 .mux-tree__col-select {
   width: 30px;
+}
+
+.mux-tree__col-on {
+  width: 34px;
 }
 
 .mux-tree__select-cell {
