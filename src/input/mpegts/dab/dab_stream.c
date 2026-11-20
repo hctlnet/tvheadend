@@ -20,6 +20,7 @@
 #include "dab_stream.h"
 #include "input.h"
 #include "input/mpegts/mpegts_dvb.h"
+#include "input/mpegts/gse_bbframes.h"
 #include "input/mpegts/mpe.h"
 #include <dvbdab/dvbdab_c.h>
 
@@ -68,10 +69,22 @@ struct dab_stream_ctx {
   uint16_t               *pids;
   int                     pids_count;
   int                     pids_changed;
+  /* GSE in BBFrames: tvheadend takes the PDUs out, the IPv4 ones go on */
+  gse_bbframes_t         *gb;
+  int                     bb_pid;
   /* MPE: tvheadend takes the datagrams out, the IPv4 ones go on */
   mpe_t                  *mpe;
   int                     mpe_pid;
 };
+
+static void
+dab_stream_pdu_cb(void *opaque, const gse_pdu_t *pdu)
+{
+  dab_stream_ctx_t *ctx = opaque;
+
+  if (pdu->protocol_type == 0x0800)
+    dvbdab_streamer_feed(ctx->streamer, pdu->data, pdu->len);
+}
 
 static void
 dab_stream_datagram_cb(void *opaque, const mpe_datagram_t *d)
@@ -140,6 +153,19 @@ dab_stream_create(const dab_stream_config_t *config,
     scfg.filter_ip = config->filter_ip;
     scfg.filter_port = config->filter_port;
     break;
+  case 3: /* GSE in the BBFrames of the Neumo driver */
+    /* the PDUs of the stream are taken out here, the IPv4 ones go on */
+    scfg.format = DVBDAB_FORMAT_IPV4;
+    ctx->gb = gse_bbframes_create(config->isi, dab_stream_pdu_cb, ctx);
+    ctx->bb_pid = config->pid;
+    if (ctx->gb == NULL) {
+      free(ctx);
+      return NULL;
+    }
+    scfg.filter_ip = config->filter_ip;
+    scfg.filter_port = config->filter_port;
+    scfg.eid = config->eid;
+    break;
   case 4: /* TSNI - TS NI V.11 */
     scfg.format = DVBDAB_FORMAT_TSNI;
     /* TSNI only needs PID, no IP/port filtering */
@@ -152,6 +178,7 @@ dab_stream_create(const dab_stream_config_t *config,
   /* Create libdvbdab streamer */
   ctx->streamer = dvbdab_streamer_create(&scfg);
   if (!ctx->streamer) {
+    gse_bbframes_destroy(ctx->gb);
     mpe_destroy(ctx->mpe);
     free(ctx);
     return NULL;
@@ -177,6 +204,7 @@ dab_stream_destroy(dab_stream_ctx_t *ctx)
 
   if (ctx->streamer)
     dvbdab_streamer_destroy(ctx->streamer);
+  gse_bbframes_destroy(ctx->gb);
   mpe_destroy(ctx->mpe);
 
   tvh_mutex_destroy(&ctx->pids_lock);
@@ -206,9 +234,11 @@ dab_stream_feed(dab_stream_ctx_t *ctx, const uint8_t *data, size_t len)
   if (!ctx || !ctx->streamer || !data)
     return -1;
 
-  /* Feed to libdvbdab (MPE: its IPv4 packets) */
+  /* Feed to libdvbdab (GSE in BBFrames, MPE: their IPv4 packets) */
   dab_stream_apply_pids(ctx);
-  if (ctx->mpe)
+  if (ctx->gb)
+    gse_bbframes_feed(ctx->gb, data, len, ctx->bb_pid);
+  else if (ctx->mpe)
     mpe_feed(ctx->mpe, data, len, ctx->mpe_pid, dab_stream_datagram_cb, ctx);
   else
     dvbdab_streamer_feed(ctx->streamer, data, len);
@@ -241,6 +271,7 @@ dab_decap_format(const mpegts_mux_t *mm)
   switch (mm->mm_type) {
   case MM_TYPE_DAB_ETI:  return 0;
   case MM_TYPE_DAB_MPE:  return 1;
+  case MM_TYPE_DAB_GSE:  return 3;
   case MM_TYPE_DAB_TSNI: return 4;
   default:               return -1;
   }
@@ -260,7 +291,7 @@ mpegts_mux_decap_start(mpegts_mux_instance_t *mmi)
   dmc = &((dvb_mux_t *)mm)->lm_tuning;
   memset(&cfg, 0, sizeof(cfg));
   cfg.format = format;
-  cfg.pid = dvb_mux_stream_pid(mm);
+  cfg.pid = dvb_mux_stream_pid(mm);   /* GSE: the PID of the BBFrames */
   if (cfg.pid == 0) {
     tvherror(LS_MPEGTS, "%s: DAB mux has no PID configured", mm->mm_nicename);
     return -1;
@@ -269,9 +300,12 @@ mpegts_mux_decap_start(mpegts_mux_instance_t *mmi)
     cfg.eti_padding = dmc->dmc_dab_eti_padding;
     cfg.eti_bit_offset = dmc->dmc_dab_eti_bit_offset;
     cfg.eti_inverted = dmc->dmc_dab_eti_inverted;
-  } else if (format == 1) {     /* MPE */
+  } else if (format == 1 || format == 3) {  /* MPE, GSE */
     cfg.filter_ip = dmc->dmc_dab_ip;
     cfg.filter_port = dmc->dmc_dab_port;
+    if (format == 3 && mm->mm_tsid != MPEGTS_TSID_NONE && mm->mm_tsid <= 0xffff)
+      cfg.eid = mm->mm_tsid;    /* the ensemble the scan found */
+    cfg.isi = format == 3 ? dmc->dmc_fe_stream_id : -1;
   }                             /* TS NI: the PID is all it needs */
 
   mmi->mmi_decap = dab_stream_create(&cfg, dab_decap_output_cb, mmi);
