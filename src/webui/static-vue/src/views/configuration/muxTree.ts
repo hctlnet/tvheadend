@@ -4,7 +4,7 @@
 /*
  * The muxes of a network as a tree: transponders and the sub-muxes
  * carried in them (the input streams of a multistream transponder,
- * T2MI) and theirs.
+ * T2MI, DAB ensembles) and theirs.
  *
  * A sub-mux names its transponder in `parent_mux` (uuid, DVB muxes
  * only); the depth is not limited here.
@@ -28,6 +28,11 @@ export interface MuxRow {
    * it that the PID belongs to (0: none) */
   pid?: number
   carrier_sid?: number
+  /* DAB in MPE: the multicast address and port of the ensemble */
+  dab_ip?: string
+  dab_port?: number
+  /* DAB in a PID: the service whose PMT lists the PID (0: none) */
+  dab_pmt_sid?: number
   pnetwork_name?: string | null
   delsys?: string
   modulation?: string
@@ -54,6 +59,7 @@ export interface MuxRow {
  * the server sends only these (and the uuid) */
 export const MUX_FIELDS = [
   'name', 'network_uuid', 'parent_mux', 'multistream', 'tstype', 'stream_id', 'pid', 'carrier_sid',
+  'dab_ip', 'dab_port', 'dab_pmt_sid',
   'pnetwork_name', 'delsys', 'modulation', 'constellation', 'fec', 'symbolrate', 'rolloff', 'pilot',
   'pls_mode', 'pls_code', 'bandwidth', 'scan_result', 'scan_state', 'num_svc', 'num_chn', 'enabled',
   'frequency', 'polarisation',
@@ -72,6 +78,9 @@ export interface MuxTreeNode {
 /* mm_type, MM_TYPE_* in src/input/mpegts.h */
 export const MUX_TYPE_TS = 0
 export const MUX_TYPE_T2MI = 1
+export const MUX_TYPE_DAB_MPE = 2
+export const MUX_TYPE_DAB_ETI = 3
+export const MUX_TYPE_DAB_TSNI = 6
 export const MUX_TYPE_ISI = 7
 
 /* the type as the tree shows it */
@@ -79,6 +88,9 @@ const TYPE_LABELS: Record<number, () => string> = {
   [MUX_TYPE_TS]: () => t('TS'),
   [MUX_TYPE_ISI]: () => t('TS (ISI)'),
   [MUX_TYPE_T2MI]: () => t('T2MI'),
+  [MUX_TYPE_DAB_MPE]: () => t('DAB-MPE'),
+  [MUX_TYPE_DAB_ETI]: () => t('DAB-ETI'),
+  [MUX_TYPE_DAB_TSNI]: () => t('DAB-TSNI'),
 }
 
 export function muxTypeName(type: number | undefined): string {
@@ -95,6 +107,12 @@ export function exactMatch(text: string): string {
 /* ... and the one that finds the text anywhere */
 export function containsMatch(text: string): string {
   return text.replace(/[.[\]()*+?{}|^$\\]/g, '\\$&')
+}
+
+/* the IP address and port of a DAB ensemble in MPE, else '' */
+export function addressLabel(row: MuxRow): string {
+  if (!row.dab_ip) return ''
+  return row.dab_port ? `${row.dab_ip}:${row.dab_port}` : row.dab_ip
 }
 
 /* mm_scan_state (MM_SCAN_STATE_* in src/input/mpegts.h): idle, queued
@@ -385,11 +403,11 @@ export function countMuxes(nodes: MuxTreeNode[]): number {
   return n
 }
 
-/* the text a mux is found by: its name and label, type, provider network
- * and tuning (lower case) */
+/* the text a mux is found by: its name and label, type, provider network,
+ * address and tuning (lower case) */
 export function muxSearchText(node: MuxTreeNode): string {
   const r = node.row
-  return [r.name, node.label, muxTypeName(r.tstype), r.pnetwork_name, tuningLabel(r)]
+  return [r.name, node.label, muxTypeName(r.tstype), r.pnetwork_name, addressLabel(r), tuningLabel(r)]
     .filter(Boolean)
     .join(' ')
     .toLowerCase()

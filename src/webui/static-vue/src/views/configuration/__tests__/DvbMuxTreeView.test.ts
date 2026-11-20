@@ -303,6 +303,39 @@ describe('DvbMuxTreeView T2MI', () => {
     expect(cell.find('.mux-tree__lock').exists()).toBe(true)
   })
 
+  it('shows a DAB ensemble with its type, the service that announces it and its address', async () => {
+    const s = server()
+    s.muxes.push(
+      {
+        uuid: 'd1', name: '12168V', network: 'Astra', network_uuid: 'n1', tstype: 0, delsys: 'DVB-S2',
+        num_svc: 1, num_chn: 0, scan_state: 0, scan_result: 1, enabled: 1,
+      },
+      {
+        uuid: 'd1a', name: '12168V Antenne DE', network: 'Astra', network_uuid: 'n1', tstype: 2, parent_mux: 'd1',
+        pid: 4122, dab_ip: '239.128.72.10', dab_port: 50010, dab_pmt_sid: 4122, delsys: 'DVB-S2',
+        num_svc: 16, num_chn: 0, scan_state: 0, scan_result: 1, enabled: 1,
+      },
+    )
+    s.services.push({ uuid: 's9', svcname: 'DAB Data', sid: 4122, network: 'Astra', multiplex_uuid: 'd1', enabled: true })
+    s.networks[0].num_mux = 3
+    const w = await mountTree(s)
+    await expand(w, 'Astra (3)')
+    const row = rowOf(w, 'Antenne DE')
+    expect(row.text()).toMatch(/^Antenne DE\s*DAB-MPE/)
+    expect(row.find('.mux-tree__name').attributes('title')).toContain('239.128.72.10:50010')
+    const cell = row.find('.mux-tree__sid')
+    expect(cell.text()).toBe('4122')
+    expect(cell.attributes('title')).toBe('Announced by the service SID 4122')
+    await expand(w, 'Services (1)')
+    expect(rowOf(w, 'Antenne DE').find('.mux-tree__sid').text()).toBe('4122 · DAB Data')
+    expect(rowOf(w, 'Antenne DE').find('.mux-tree__sid').attributes('title')).toBe(
+      'Announced by the service DAB Data (SID 4122)',
+    )
+    expect(String(calls('mpegts/mux/grid')[0].list).split(',')).toEqual(
+      expect.arrayContaining(['dab_ip', 'dab_port', 'dab_pmt_sid']),
+    )
+  })
+
   it('leaves the SID column of an input stream empty', async () => {
     const s = server()
     multistream(s)
