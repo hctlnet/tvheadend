@@ -233,9 +233,10 @@ mpegts_network_scan_idle_mux_add ( mpegts_network_t *mn, mpegts_mux_t *mm )
 }
 
 #if ENABLE_MPEGTS_DVB
-/* A scan of a transponder scans its sub-muxes too (T2-MI streams): they
- * come from the same signal, and a result of theirs may be from an earlier
- * tuning. New ones are queued by the search that makes them.
+/* A scan of a transponder scans its sub-muxes too (input streams, T2-MI
+ * streams, DAB ensembles): they come from the same signal, and a result of
+ * theirs may be from an earlier tuning. New ones are queued by the search
+ * that makes them.
  * 'weight' is that of the scan of the transponder: after an idle scan none
  * is queued (the sub-muxes have idle scans of their own), else they get an
  * initial scan - after a user scan with its flag, which the scan settings
