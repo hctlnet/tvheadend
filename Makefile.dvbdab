@@ -1,0 +1,130 @@
+#
+# Copyright (C) 2026 Tvheadend Project (https://tvheadend.org)
+#
+# This file is part of Tvheadend
+#
+# Tvheadend is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# Tvheadend is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with Tvheadend.  If not, see <http://www.gnu.org/licenses/>.
+#
+# For more details, including opportunities for alternative licensing,
+# please read the LICENSE file.
+#
+# ############################################################################
+
+# ############################################################################
+# libdvbdab (DAB/DAB+ in DVB streams) as a static library, with the XML
+# parser it needs (pugixml). Both are C++ and built with cmake.
+# ############################################################################
+
+DIR :=  $(dir $(lastword $(MAKEFILE_LIST)))
+include $(DIR)/.config.mk
+
+unexport CFLAGS
+unexport LDFLAGS
+
+# ###########################################################################
+# Upstream Packages
+# ###########################################################################
+
+PUGIXML_VER     = 1.15
+PUGIXML         = pugixml-$(PUGIXML_VER)
+PUGIXML_TB      = $(PUGIXML).tar.gz
+PUGIXML_URL     = https://github.com/zeux/pugixml/releases/download/v$(PUGIXML_VER)/$(PUGIXML_TB)
+PUGIXML_SHA1    = 906f1038f0687ce6466687eaa9b457af3c7e3382
+
+LIBDVBDAB_VER   = 2.8.0
+LIBDVBDAB       = libdvbdab-$(LIBDVBDAB_VER)
+LIBDVBDAB_TB    = $(LIBDVBDAB).tar.gz
+LIBDVBDAB_URL   = https://github.com/hctlnet/libdvbdab/archive/refs/tags/v$(LIBDVBDAB_VER).tar.gz
+LIBDVBDAB_SHA1  = 8226155bf1d6a77f7e5cb179e0a074eb69377294
+
+# ###########################################################################
+# Library Config
+# ###########################################################################
+
+LIB_NAME       := dvbdab
+LIB_ROOT       := $(BUILDDIR)/$(LIB_NAME)
+EPREFIX        := $(LIB_ROOT)/build
+LIB_FILES      := \
+			$(LIB_ROOT)/$(PUGIXML)/.tvh_download \
+			$(LIB_ROOT)/$(PUGIXML)/.tvh_build \
+			$(LIB_ROOT)/$(LIBDVBDAB)/.tvh_download \
+			$(LIB_ROOT)/$(LIBDVBDAB)/.tvh_build \
+			$(EPREFIX)/lib/libpugixml.a \
+			$(EPREFIX)/lib/libdvbdab.a \
+			$(EPREFIX)/include/dvbdab/*.h
+
+include $(DIR)/Makefile.static
+
+.PHONY: build
+build: $(LIB_ROOT)/$(LIBDVBDAB)/.tvh_build
+	$(call LIBCACHEGET_TIMESTAMP)
+
+# ###########################################################################
+# Build Rules
+# ###########################################################################
+
+# static, position independent (tvheadend may be linked as a PIE), into
+# $(EPREFIX); only the libraries: no tests, no tools
+CMAKE_OPTS := \
+		-G "Unix Makefiles" \
+		-DCMAKE_BUILD_TYPE=Release \
+		-DCMAKE_INSTALL_PREFIX="$(EPREFIX)" \
+		-DCMAKE_INSTALL_LIBDIR=lib \
+		-DCMAKE_POSITION_INDEPENDENT_CODE=ON \
+		-DBUILD_SHARED_LIBS=OFF
+
+#
+# pugixml
+#
+
+$(LIB_ROOT)/$(PUGIXML)/.tvh_download:
+	$(call DOWNLOAD,$(PUGIXML_URL),$(LIB_ROOT)/$(PUGIXML_TB),$(PUGIXML_SHA1))
+	$(call UNTAR,$(PUGIXML_TB),z)
+	@touch $@
+
+$(LIB_ROOT)/$(PUGIXML)/.tvh_build: \
+		$(LIB_ROOT)/$(PUGIXML)/.tvh_download
+	cd $(LIB_ROOT)/$(PUGIXML) && cmake $(CMAKE_OPTS) \
+		-DPUGIXML_BUILD_TESTS=OFF \
+		-S . -B tvh-build
+	$(MAKE) -C $(LIB_ROOT)/$(PUGIXML)/tvh-build install
+	@touch $@
+
+#
+# libdvbdab
+#
+# DAB+ transcoding (faad2 and libavcodec) is not built in here
+#
+
+$(LIB_ROOT)/$(LIBDVBDAB)/.tvh_download:
+	$(call DOWNLOAD,$(LIBDVBDAB_URL),$(LIB_ROOT)/$(LIBDVBDAB_TB),$(LIBDVBDAB_SHA1))
+	$(call UNTAR,$(LIBDVBDAB_TB),z)
+	@touch $@
+
+$(LIB_ROOT)/$(LIBDVBDAB)/.tvh_build: \
+		$(LIB_ROOT)/$(PUGIXML)/.tvh_build \
+		$(LIB_ROOT)/$(LIBDVBDAB)/.tvh_download
+	cd $(LIB_ROOT)/$(LIBDVBDAB) && \
+		PKG_CONFIG_PATH="$(EPREFIX)/lib/pkgconfig:$$PKG_CONFIG_PATH" \
+		cmake $(CMAKE_OPTS) \
+		-DDVBDAB_WARNINGS=OFF \
+		-DDVBDAB_TRANSCODE=OFF \
+		-S . -B tvh-build
+	$(MAKE) -C $(LIB_ROOT)/$(LIBDVBDAB)/tvh-build dvbdab
+	cd $(LIB_ROOT)/$(LIBDVBDAB) && cmake --install tvh-build
+	@touch $@
+
+.PHONY: static_libdvbdab_clean
+static_libdvbdab_clean:
+	@rm -rf $(LIB_ROOT)
