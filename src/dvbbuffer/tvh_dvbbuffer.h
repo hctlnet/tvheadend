@@ -47,6 +47,14 @@ int dvbbuffer_mux_feed0(struct mpegts_mux *mm, const uint8_t *tsb, int len,
   ((mm)->mm_dvbbuffer ? dvbbuffer_mux_feed0(mm, tsb, len, cc_restart, sp) : 0)
 /* the next piece in one piece of ring memory: bytes, 0 = done */
 int dvbbuffer_mux_span(struct mpegts_mux *mm, dvbbuffer_span_t *sp, const uint8_t **data);
+/* the ring holds a backlog for new PID subscriptions (not just tuned) */
+int dvbbuffer_mux_backlog_ready(struct mpegts_mux *mm);
+/* the backlog for new PID subscriptions, oldest first (read with
+   dvbbuffer_mux_span); capids: bitmap (8192 bits) of the ECM PIDs of the
+   services they belong to, NULL = none - the backlog then starts at the
+   first ECM, the packets before it have no key */
+void dvbbuffer_mux_backlog(struct mpegts_mux *mm, dvbbuffer_span_t *sp,
+                           const uint8_t *capids);
 
 /* mux property "prebuffer" changed, global_lock held */
 void dvbbuffer_mux_prebuffer_notify(void *p, const char *lang);
