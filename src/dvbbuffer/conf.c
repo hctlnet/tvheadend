@@ -21,6 +21,8 @@ CLASS_DOC(dvbbuffer)
  * offset of the mux) */
 #define DVBBUFFER_BUFFER_SEC_DEFAULT 3
 
+static void dvbbuffer_conf_slots_apply(void);
+
 static void
 dvbbuffer_conf_fixup(void)
 {
@@ -59,8 +61,267 @@ dvbbuffer_conf_class_changed(idnode_t *self)
 {
   dvbbuffer_conf_fixup();
   dvbbuffer_mux_conf_changed();
+  dvbbuffer_conf_slots_apply();
   /* buffer size / bitrate apply to muxes started from now on */
   dvbbuffer_warm_reconcile();
+}
+
+/*
+ * The muxes kept warm, chosen on this page: one field per warm mux (as
+ * many as "Maximum warm muxes", more when more muxes are marked), each a
+ * view of the mux property "prebuffer" (Configuration -> DVB Inputs ->
+ * Muxes); nothing of it is stored here. The order of the fields is kept
+ * while tvh runs, muxes marked elsewhere fill the free fields by name;
+ * muxes marked beyond the 16 fields are not shown and keep their flag.
+ * IPTV networks have thousands of muxes: their muxes are offered only
+ * once marked at the mux.
+ */
+#define DVBBUFFER_MUX_SLOTS 16
+
+static char dvbbuffer_conf_slot[DVBBUFFER_MUX_SLOTS][UUID_HEX_SIZE];
+/* the fields written with another mux than they show, until
+ * dvbbuffer_conf_class_changed(): the mux shown and the new one */
+static char dvbbuffer_conf_slot_old[DVBBUFFER_MUX_SLOTS][UUID_HEX_SIZE];
+static char dvbbuffer_conf_slot_new[DVBBUFFER_MUX_SLOTS][UUID_HEX_SIZE];
+static uint32_t dvbbuffer_conf_slot_changed;    /* one bit per field */
+
+static int
+dvbbuffer_conf_mux_offered(mpegts_mux_t *mm, const idclass_t *iptv)
+{
+  if (mm->mm_prebuffer)
+    return 1;
+  return iptv == NULL || !idnode_is_instance(&mm->mm_network->mn_id, iptv);
+}
+
+static mpegts_mux_t *
+dvbbuffer_conf_slot_mux(const char *uuid)
+{
+  mpegts_mux_t *mm;
+
+  if (uuid == NULL || uuid[0] == '\0')
+    return NULL;
+  mm = mpegts_mux_find(uuid);
+  return mm && mm->mm_prebuffer ? mm : NULL;
+}
+
+static int
+dvbbuffer_conf_mux_name_cmp(const void *a, const void *b)
+{
+  return strcasecmp((*(mpegts_mux_t * const *)a)->mm_nicename ?: "",
+                    (*(mpegts_mux_t * const *)b)->mm_nicename ?: "");
+}
+
+/* the fields as shown: the kept order of the marked muxes, then the
+ * other marked muxes by name; returns the number of marked muxes */
+static int
+dvbbuffer_conf_slots_view(char view[DVBBUFFER_MUX_SLOTS][UUID_HEX_SIZE])
+{
+  mpegts_network_t *mn;
+  mpegts_mux_t *mm, *rest[DVBBUFFER_MUX_SLOTS];
+  int i, j, n = 0, nrest = 0, count = 0;
+
+  memset(view, 0, DVBBUFFER_MUX_SLOTS * UUID_HEX_SIZE);
+  for (i = 0; i < DVBBUFFER_MUX_SLOTS; i++) {
+    if (dvbbuffer_conf_slot_mux(dvbbuffer_conf_slot[i]) == NULL)
+      continue;
+    for (j = 0; j < i; j++)
+      if (!strcmp(dvbbuffer_conf_slot[j], dvbbuffer_conf_slot[i]))
+        break;
+    if (j == i)
+      strcpy(view[i], dvbbuffer_conf_slot[i]);
+  }
+  LIST_FOREACH(mn, &mpegts_network_all, mn_global_link)
+    LIST_FOREACH(mm, &mn->mn_muxes, mm_network_link) {
+      char ubuf[UUID_HEX_SIZE];
+      if (!mm->mm_prebuffer)
+        continue;
+      count++;
+      idnode_uuid_as_str(&mm->mm_id, ubuf);
+      for (i = 0; i < DVBBUFFER_MUX_SLOTS; i++)
+        if (!strcmp(view[i], ubuf))
+          break;
+      if (i == DVBBUFFER_MUX_SLOTS && nrest < DVBBUFFER_MUX_SLOTS)
+        rest[nrest++] = mm;
+    }
+  qsort(rest, nrest, sizeof(rest[0]), dvbbuffer_conf_mux_name_cmp);
+  for (i = 0; i < DVBBUFFER_MUX_SLOTS && n < nrest; i++)
+    if (view[i][0] == '\0')
+      idnode_uuid_as_str(&rest[n++]->mm_id, view[i]);
+  return count;
+}
+
+static const void *
+dvbbuffer_conf_slot_get(int slot)
+{
+  static char view[DVBBUFFER_MUX_SLOTS][UUID_HEX_SIZE];
+  static const char *ret;
+
+  dvbbuffer_conf_slots_view(view);
+  ret = view[slot];
+  return &ret;
+}
+
+/* a field with the mux it shows changes nothing (the classic form sends all
+ * fields, a client may send unchanged ones); a field with another mux
+ * changes the flags of these two muxes only, all other muxes keep theirs */
+static int
+dvbbuffer_conf_slot_set(int slot, const void *v)
+{
+  char view[DVBBUFFER_MUX_SLOTS][UUID_HEX_SIZE];
+  const char *uuid = v ?: "";
+
+  dvbbuffer_conf_slots_view(view);
+  if (!strcmp(view[slot], uuid))
+    return 0;
+  strlcpy(dvbbuffer_conf_slot_old[slot], view[slot], UUID_HEX_SIZE);
+  strlcpy(dvbbuffer_conf_slot_new[slot], uuid, UUID_HEX_SIZE);
+  dvbbuffer_conf_slot_changed |= 1u << slot;
+  return 1;
+}
+
+/* as many fields as warm muxes, and all fields up to the last one with a
+ * mux: a mux in a field behind them (warm_max lowered) can still be removed */
+static uint32_t
+dvbbuffer_conf_slot_opts(int slot, uint32_t opts)
+{
+  char view[DVBBUFFER_MUX_SLOTS][UUID_HEX_SIZE];
+  int i, n = dvbbuffer_conf.warm_max;
+
+  dvbbuffer_conf_slots_view(view);
+  for (i = n; i < DVBBUFFER_MUX_SLOTS; i++)
+    if (view[i][0])
+      n = i + 1;
+  return slot < n ? opts : opts | PO_HIDDEN | PO_NOUI;
+}
+
+/* the mux property "prebuffer" of the mux uuid ("" = none) */
+static void
+dvbbuffer_conf_slot_mark(const char *uuid, int on)
+{
+  mpegts_mux_t *mm;
+
+  if (uuid[0] == '\0' || (mm = mpegts_mux_find(uuid)) == NULL || !mm->mm_prebuffer == !on)
+    return;
+  mm->mm_prebuffer = on;
+  idnode_changed(&mm->mm_id);
+  dvbbuffer_mux_prebuffer_notify(mm, NULL);
+}
+
+/* the changed fields to their muxes (from dvbbuffer_conf_class_changed): the
+ * mux a field showed loses its flag unless another changed field chose it,
+ * the new one gets it; the fields keep their order */
+static void
+dvbbuffer_conf_slots_apply(void)
+{
+  char view[DVBBUFFER_MUX_SLOTS][UUID_HEX_SIZE];
+  uint32_t changed = dvbbuffer_conf_slot_changed;
+  int i, j;
+
+  if (!changed)
+    return;
+  dvbbuffer_conf_slot_changed = 0;
+  dvbbuffer_conf_slots_view(view);
+  for (i = 0; i < DVBBUFFER_MUX_SLOTS; i++) {
+    if (!(changed & (1u << i)))
+      continue;
+    strcpy(view[i], dvbbuffer_conf_slot_new[i]);
+    for (j = 0; j < DVBBUFFER_MUX_SLOTS; j++)
+      if ((changed & (1u << j)) &&
+          !strcmp(dvbbuffer_conf_slot_new[j], dvbbuffer_conf_slot_old[i]))
+        break;
+    if (j == DVBBUFFER_MUX_SLOTS)
+      dvbbuffer_conf_slot_mark(dvbbuffer_conf_slot_old[i], 0);
+  }
+  for (i = 0; i < DVBBUFFER_MUX_SLOTS; i++)
+    if (changed & (1u << i))
+      dvbbuffer_conf_slot_mark(dvbbuffer_conf_slot_new[i], 1);
+  memcpy(dvbbuffer_conf_slot, view, sizeof(dvbbuffer_conf_slot));
+}
+
+#define DVBBUFFER_SLOT_FUNCS(i) \
+  static const void *dvbbuffer_conf_slot_get_##i(void *o) \
+    { return dvbbuffer_conf_slot_get(i); } \
+  static int dvbbuffer_conf_slot_set_##i(void *o, const void *v) \
+    { return dvbbuffer_conf_slot_set(i, v); } \
+  static uint32_t dvbbuffer_conf_slot_opts_##i(void *o, uint32_t opts) \
+    { return dvbbuffer_conf_slot_opts(i, opts); }
+DVBBUFFER_SLOT_FUNCS(0)  DVBBUFFER_SLOT_FUNCS(1)  DVBBUFFER_SLOT_FUNCS(2)
+DVBBUFFER_SLOT_FUNCS(3)  DVBBUFFER_SLOT_FUNCS(4)  DVBBUFFER_SLOT_FUNCS(5)
+DVBBUFFER_SLOT_FUNCS(6)  DVBBUFFER_SLOT_FUNCS(7)  DVBBUFFER_SLOT_FUNCS(8)
+DVBBUFFER_SLOT_FUNCS(9)  DVBBUFFER_SLOT_FUNCS(10) DVBBUFFER_SLOT_FUNCS(11)
+DVBBUFFER_SLOT_FUNCS(12) DVBBUFFER_SLOT_FUNCS(13) DVBBUFFER_SLOT_FUNCS(14)
+DVBBUFFER_SLOT_FUNCS(15)
+
+static htsmsg_t *
+dvbbuffer_conf_class_muxes_enum(void *o, const char *lang)
+{
+  htsmsg_t *m = htsmsg_create_map();
+
+  htsmsg_add_str(m, "type", "api");
+  htsmsg_add_str(m, "uri",  "dvbbuffer/mux/list");
+  htsmsg_add_str(m, "event", "mpegts_mux");
+  return m;
+}
+
+typedef struct {
+  char key[UUID_HEX_SIZE];
+  char val[256];
+} dvbbuffer_conf_mux_entry_t;
+
+static int
+dvbbuffer_conf_mux_entry_cmp(const void *a, const void *b)
+{
+  return strcasecmp(((const dvbbuffer_conf_mux_entry_t *)a)->val,
+                    ((const dvbbuffer_conf_mux_entry_t *)b)->val);
+}
+
+/* the muxes to choose from, "network: mux" sorted by name */
+static int
+dvbbuffer_conf_api_mux_list
+  ( access_t *perm, void *opaque, const char *op, htsmsg_t *args, htsmsg_t **resp )
+{
+  const idclass_t *iptv = idclass_find("iptv_network");
+  mpegts_network_t *mn;
+  mpegts_mux_t *mm;
+  dvbbuffer_conf_mux_entry_t *e = NULL;
+  htsmsg_t *l;
+  size_t n = 0, size = 0, i, len;
+  char nbuf[128];
+
+  tvh_mutex_lock(&global_lock);
+  LIST_FOREACH(mn, &mpegts_network_all, mn_global_link) {
+    nbuf[0] = '\0';
+    if (mn->mn_display_name)
+      mn->mn_display_name(mn, nbuf, sizeof(nbuf));
+    LIST_FOREACH(mm, &mn->mn_muxes, mm_network_link) {
+      if (!dvbbuffer_conf_mux_offered(mm, iptv))
+        continue;
+      if (n == size) {
+        size = size ? size * 2 : 256;
+        e = realloc(e, size * sizeof(*e));
+        if (e == NULL) {
+          tvh_mutex_unlock(&global_lock);
+          return ENOMEM;
+        }
+      }
+      idnode_uuid_as_str(&mm->mm_id, e[n].key);
+      len = snprintf(e[n].val, sizeof(e[n].val), "%s: ", nbuf);
+      if (len < sizeof(e[n].val) && mm->mm_display_name)
+        mm->mm_display_name(mm, e[n].val + len, sizeof(e[n].val) - len);
+      n++;
+    }
+  }
+  tvh_mutex_unlock(&global_lock);
+
+  if (n)
+    qsort(e, n, sizeof(*e), dvbbuffer_conf_mux_entry_cmp);
+  l = htsmsg_create_list();
+  for (i = 0; i < n; i++)
+    htsmsg_add_msg(l, NULL, htsmsg_create_key_val(e[i].key, e[i].val));
+  free(e);
+  *resp = htsmsg_create_map();
+  htsmsg_add_msg(*resp, "entries", l);
+  return 0;
 }
 
 static htsmsg_t *
@@ -145,6 +406,262 @@ const idclass_t dvbbuffer_conf_class = {
       .off    = offsetof(dvbbuffer_conf_t, warm_max),
       .group  = 1,
     },
+    {
+      .type     = PT_STR,
+      .id       = "prebuffer_mux_1",
+      .name     = N_("Warm mux 1"),
+      .desc     = N_("A mux kept warm, the same as \"Prebuffer (instant "
+                     "zapping)\" at the mux (Configuration -> DVB Inputs -> "
+                     "Muxes). There is one field per warm mux (\"Maximum warm "
+                     "muxes\", save and reload for more). Muxes of IPTV "
+                     "networks are listed only when marked there."),
+      .get      = dvbbuffer_conf_slot_get_0,
+      .set      = dvbbuffer_conf_slot_set_0,
+      .get_opts = dvbbuffer_conf_slot_opts_0,
+      .list     = dvbbuffer_conf_class_muxes_enum,
+      .opts     = PO_NOSAVE,
+      .group    = 1,
+    },
+    {
+      .type     = PT_STR,
+      .id       = "prebuffer_mux_2",
+      .name     = N_("Warm mux 2"),
+      .desc     = N_("A mux kept warm, the same as \"Prebuffer (instant "
+                     "zapping)\" at the mux (Configuration -> DVB Inputs -> "
+                     "Muxes). There is one field per warm mux (\"Maximum warm "
+                     "muxes\", save and reload for more). Muxes of IPTV "
+                     "networks are listed only when marked there."),
+      .get      = dvbbuffer_conf_slot_get_1,
+      .set      = dvbbuffer_conf_slot_set_1,
+      .get_opts = dvbbuffer_conf_slot_opts_1,
+      .list     = dvbbuffer_conf_class_muxes_enum,
+      .opts     = PO_NOSAVE,
+      .group    = 1,
+    },
+    {
+      .type     = PT_STR,
+      .id       = "prebuffer_mux_3",
+      .name     = N_("Warm mux 3"),
+      .desc     = N_("A mux kept warm, the same as \"Prebuffer (instant "
+                     "zapping)\" at the mux (Configuration -> DVB Inputs -> "
+                     "Muxes). There is one field per warm mux (\"Maximum warm "
+                     "muxes\", save and reload for more). Muxes of IPTV "
+                     "networks are listed only when marked there."),
+      .get      = dvbbuffer_conf_slot_get_2,
+      .set      = dvbbuffer_conf_slot_set_2,
+      .get_opts = dvbbuffer_conf_slot_opts_2,
+      .list     = dvbbuffer_conf_class_muxes_enum,
+      .opts     = PO_NOSAVE,
+      .group    = 1,
+    },
+    {
+      .type     = PT_STR,
+      .id       = "prebuffer_mux_4",
+      .name     = N_("Warm mux 4"),
+      .desc     = N_("A mux kept warm, the same as \"Prebuffer (instant "
+                     "zapping)\" at the mux (Configuration -> DVB Inputs -> "
+                     "Muxes). There is one field per warm mux (\"Maximum warm "
+                     "muxes\", save and reload for more). Muxes of IPTV "
+                     "networks are listed only when marked there."),
+      .get      = dvbbuffer_conf_slot_get_3,
+      .set      = dvbbuffer_conf_slot_set_3,
+      .get_opts = dvbbuffer_conf_slot_opts_3,
+      .list     = dvbbuffer_conf_class_muxes_enum,
+      .opts     = PO_NOSAVE,
+      .group    = 1,
+    },
+    {
+      .type     = PT_STR,
+      .id       = "prebuffer_mux_5",
+      .name     = N_("Warm mux 5"),
+      .desc     = N_("A mux kept warm, the same as \"Prebuffer (instant "
+                     "zapping)\" at the mux (Configuration -> DVB Inputs -> "
+                     "Muxes). There is one field per warm mux (\"Maximum warm "
+                     "muxes\", save and reload for more). Muxes of IPTV "
+                     "networks are listed only when marked there."),
+      .get      = dvbbuffer_conf_slot_get_4,
+      .set      = dvbbuffer_conf_slot_set_4,
+      .get_opts = dvbbuffer_conf_slot_opts_4,
+      .list     = dvbbuffer_conf_class_muxes_enum,
+      .opts     = PO_NOSAVE,
+      .group    = 1,
+    },
+    {
+      .type     = PT_STR,
+      .id       = "prebuffer_mux_6",
+      .name     = N_("Warm mux 6"),
+      .desc     = N_("A mux kept warm, the same as \"Prebuffer (instant "
+                     "zapping)\" at the mux (Configuration -> DVB Inputs -> "
+                     "Muxes). There is one field per warm mux (\"Maximum warm "
+                     "muxes\", save and reload for more). Muxes of IPTV "
+                     "networks are listed only when marked there."),
+      .get      = dvbbuffer_conf_slot_get_5,
+      .set      = dvbbuffer_conf_slot_set_5,
+      .get_opts = dvbbuffer_conf_slot_opts_5,
+      .list     = dvbbuffer_conf_class_muxes_enum,
+      .opts     = PO_NOSAVE,
+      .group    = 1,
+    },
+    {
+      .type     = PT_STR,
+      .id       = "prebuffer_mux_7",
+      .name     = N_("Warm mux 7"),
+      .desc     = N_("A mux kept warm, the same as \"Prebuffer (instant "
+                     "zapping)\" at the mux (Configuration -> DVB Inputs -> "
+                     "Muxes). There is one field per warm mux (\"Maximum warm "
+                     "muxes\", save and reload for more). Muxes of IPTV "
+                     "networks are listed only when marked there."),
+      .get      = dvbbuffer_conf_slot_get_6,
+      .set      = dvbbuffer_conf_slot_set_6,
+      .get_opts = dvbbuffer_conf_slot_opts_6,
+      .list     = dvbbuffer_conf_class_muxes_enum,
+      .opts     = PO_NOSAVE,
+      .group    = 1,
+    },
+    {
+      .type     = PT_STR,
+      .id       = "prebuffer_mux_8",
+      .name     = N_("Warm mux 8"),
+      .desc     = N_("A mux kept warm, the same as \"Prebuffer (instant "
+                     "zapping)\" at the mux (Configuration -> DVB Inputs -> "
+                     "Muxes). There is one field per warm mux (\"Maximum warm "
+                     "muxes\", save and reload for more). Muxes of IPTV "
+                     "networks are listed only when marked there."),
+      .get      = dvbbuffer_conf_slot_get_7,
+      .set      = dvbbuffer_conf_slot_set_7,
+      .get_opts = dvbbuffer_conf_slot_opts_7,
+      .list     = dvbbuffer_conf_class_muxes_enum,
+      .opts     = PO_NOSAVE,
+      .group    = 1,
+    },
+    {
+      .type     = PT_STR,
+      .id       = "prebuffer_mux_9",
+      .name     = N_("Warm mux 9"),
+      .desc     = N_("A mux kept warm, the same as \"Prebuffer (instant "
+                     "zapping)\" at the mux (Configuration -> DVB Inputs -> "
+                     "Muxes). There is one field per warm mux (\"Maximum warm "
+                     "muxes\", save and reload for more). Muxes of IPTV "
+                     "networks are listed only when marked there."),
+      .get      = dvbbuffer_conf_slot_get_8,
+      .set      = dvbbuffer_conf_slot_set_8,
+      .get_opts = dvbbuffer_conf_slot_opts_8,
+      .list     = dvbbuffer_conf_class_muxes_enum,
+      .opts     = PO_NOSAVE,
+      .group    = 1,
+    },
+    {
+      .type     = PT_STR,
+      .id       = "prebuffer_mux_10",
+      .name     = N_("Warm mux 10"),
+      .desc     = N_("A mux kept warm, the same as \"Prebuffer (instant "
+                     "zapping)\" at the mux (Configuration -> DVB Inputs -> "
+                     "Muxes). There is one field per warm mux (\"Maximum warm "
+                     "muxes\", save and reload for more). Muxes of IPTV "
+                     "networks are listed only when marked there."),
+      .get      = dvbbuffer_conf_slot_get_9,
+      .set      = dvbbuffer_conf_slot_set_9,
+      .get_opts = dvbbuffer_conf_slot_opts_9,
+      .list     = dvbbuffer_conf_class_muxes_enum,
+      .opts     = PO_NOSAVE,
+      .group    = 1,
+    },
+    {
+      .type     = PT_STR,
+      .id       = "prebuffer_mux_11",
+      .name     = N_("Warm mux 11"),
+      .desc     = N_("A mux kept warm, the same as \"Prebuffer (instant "
+                     "zapping)\" at the mux (Configuration -> DVB Inputs -> "
+                     "Muxes). There is one field per warm mux (\"Maximum warm "
+                     "muxes\", save and reload for more). Muxes of IPTV "
+                     "networks are listed only when marked there."),
+      .get      = dvbbuffer_conf_slot_get_10,
+      .set      = dvbbuffer_conf_slot_set_10,
+      .get_opts = dvbbuffer_conf_slot_opts_10,
+      .list     = dvbbuffer_conf_class_muxes_enum,
+      .opts     = PO_NOSAVE,
+      .group    = 1,
+    },
+    {
+      .type     = PT_STR,
+      .id       = "prebuffer_mux_12",
+      .name     = N_("Warm mux 12"),
+      .desc     = N_("A mux kept warm, the same as \"Prebuffer (instant "
+                     "zapping)\" at the mux (Configuration -> DVB Inputs -> "
+                     "Muxes). There is one field per warm mux (\"Maximum warm "
+                     "muxes\", save and reload for more). Muxes of IPTV "
+                     "networks are listed only when marked there."),
+      .get      = dvbbuffer_conf_slot_get_11,
+      .set      = dvbbuffer_conf_slot_set_11,
+      .get_opts = dvbbuffer_conf_slot_opts_11,
+      .list     = dvbbuffer_conf_class_muxes_enum,
+      .opts     = PO_NOSAVE,
+      .group    = 1,
+    },
+    {
+      .type     = PT_STR,
+      .id       = "prebuffer_mux_13",
+      .name     = N_("Warm mux 13"),
+      .desc     = N_("A mux kept warm, the same as \"Prebuffer (instant "
+                     "zapping)\" at the mux (Configuration -> DVB Inputs -> "
+                     "Muxes). There is one field per warm mux (\"Maximum warm "
+                     "muxes\", save and reload for more). Muxes of IPTV "
+                     "networks are listed only when marked there."),
+      .get      = dvbbuffer_conf_slot_get_12,
+      .set      = dvbbuffer_conf_slot_set_12,
+      .get_opts = dvbbuffer_conf_slot_opts_12,
+      .list     = dvbbuffer_conf_class_muxes_enum,
+      .opts     = PO_NOSAVE,
+      .group    = 1,
+    },
+    {
+      .type     = PT_STR,
+      .id       = "prebuffer_mux_14",
+      .name     = N_("Warm mux 14"),
+      .desc     = N_("A mux kept warm, the same as \"Prebuffer (instant "
+                     "zapping)\" at the mux (Configuration -> DVB Inputs -> "
+                     "Muxes). There is one field per warm mux (\"Maximum warm "
+                     "muxes\", save and reload for more). Muxes of IPTV "
+                     "networks are listed only when marked there."),
+      .get      = dvbbuffer_conf_slot_get_13,
+      .set      = dvbbuffer_conf_slot_set_13,
+      .get_opts = dvbbuffer_conf_slot_opts_13,
+      .list     = dvbbuffer_conf_class_muxes_enum,
+      .opts     = PO_NOSAVE,
+      .group    = 1,
+    },
+    {
+      .type     = PT_STR,
+      .id       = "prebuffer_mux_15",
+      .name     = N_("Warm mux 15"),
+      .desc     = N_("A mux kept warm, the same as \"Prebuffer (instant "
+                     "zapping)\" at the mux (Configuration -> DVB Inputs -> "
+                     "Muxes). There is one field per warm mux (\"Maximum warm "
+                     "muxes\", save and reload for more). Muxes of IPTV "
+                     "networks are listed only when marked there."),
+      .get      = dvbbuffer_conf_slot_get_14,
+      .set      = dvbbuffer_conf_slot_set_14,
+      .get_opts = dvbbuffer_conf_slot_opts_14,
+      .list     = dvbbuffer_conf_class_muxes_enum,
+      .opts     = PO_NOSAVE,
+      .group    = 1,
+    },
+    {
+      .type     = PT_STR,
+      .id       = "prebuffer_mux_16",
+      .name     = N_("Warm mux 16"),
+      .desc     = N_("A mux kept warm, the same as \"Prebuffer (instant "
+                     "zapping)\" at the mux (Configuration -> DVB Inputs -> "
+                     "Muxes). There is one field per warm mux (\"Maximum warm "
+                     "muxes\", save and reload for more). Muxes of IPTV "
+                     "networks are listed only when marked there."),
+      .get      = dvbbuffer_conf_slot_get_15,
+      .set      = dvbbuffer_conf_slot_set_15,
+      .get_opts = dvbbuffer_conf_slot_opts_15,
+      .list     = dvbbuffer_conf_class_muxes_enum,
+      .opts     = PO_NOSAVE,
+      .group    = 1,
+    },
     {}
   }
 };
@@ -155,6 +672,7 @@ dvbbuffer_conf_init(void)
   static api_hook_t ah[] = {
     { "dvbbuffer/config/load", ACCESS_ADMIN, api_idnode_load_simple, &dvbbuffer_conf },
     { "dvbbuffer/config/save", ACCESS_ADMIN, api_idnode_save_simple, &dvbbuffer_conf },
+    { "dvbbuffer/mux/list",    ACCESS_ADMIN, dvbbuffer_conf_api_mux_list, NULL },
     { NULL },
   };
   htsmsg_t *m;
