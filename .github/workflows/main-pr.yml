@@ -1,22 +1,30 @@
 name: Build pull requests to main
 
 # This fork collects its work in the branch main, one pull request after
-# the other on top of upstream's master. A pull request to main is built
-# on a few systems that stand for the matrix of build-ci.yml (64 and 32
-# bit x86, ARM, Debian, Ubuntu, Fedora); the whole matrix is run by hand
-# (workflow_dispatch of build-ci.yml) when a stage of the work is complete.
+# the other on top of upstream's master. The pull requests of a stage are
+# stacked: the one on top has the commits of all below it. So not every
+# pull request is built, but the one that gets the label "run-ci" (the top
+# of a stack, when the stage is ready) - on a few systems that stand for
+# the matrix of build-ci.yml (64 and 32 bit x86, ARM, Debian, Ubuntu,
+# Fedora). To build it again after a push: take the label off and put it
+# on again, or start the workflow by hand on the branch. The whole matrix
+# is run by hand (workflow_dispatch of build-ci.yml) when a stage of the
+# work is complete.
 
 on:
   pull_request:
     branches:
       - main
+    types:
+      - labeled
   workflow_dispatch:
 
 # not named after the workflow: webui-vue-build.yml, called below, has a
 # group of that name and the ref, and a run started by hand on a branch
-# would wait for itself
+# would wait for itself. With the label: the run another label starts
+# (it only skips its jobs) does not cancel a build.
 concurrency:
-  group: main-pr-${{ github.event.pull_request.number || github.ref }}
+  group: main-pr-${{ github.event.pull_request.number || github.ref }}-${{ github.event.label.name || 'manual' }}
   cancel-in-progress: true
 
 env:
@@ -24,6 +32,8 @@ env:
 
 jobs:
   vue:
+    # the build jobs need this one: without the label none of them runs
+    if: github.event_name == 'workflow_dispatch' || github.event.label.name == 'run-ci'
     uses: ./.github/workflows/webui-vue-build.yml
 
   build-deb:
