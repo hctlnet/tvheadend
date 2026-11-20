@@ -418,6 +418,9 @@ struct streaming_start {
   uint16_t ss_pmt_pid;
   uint16_t ss_service_id;
 
+  uint8_t  ss_dvbbuffer;  /* the stream begins with the ring backlog of a
+                             warm mux (instant zapping) */
+
   streaming_start_component_t ss_components[0];
 
 };
