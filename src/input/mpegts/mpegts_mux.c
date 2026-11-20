@@ -617,7 +617,7 @@ const idclass_t mpegts_mux_class =
       .name     = N_("Type"),
       .desc     = N_("Transport stream type: TS or a sub-mux carried in "
                      "its transponder (an input stream of a multistream "
-                     "transponder, T2MI)."),
+                     "transponder, T2MI, DAB)."),
       .off      = offsetof(mpegts_mux_t, mm_type),
       .list     = mpegts_mux_class_type_list,
       .opts     = PO_RDONLY | PO_NOSAVE,

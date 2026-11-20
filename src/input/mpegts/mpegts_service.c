@@ -176,8 +176,9 @@ mpegts_service_class_get_source ( void *ptr )
   mpegts_mux_t *mm = ((mpegts_service_t *)ptr)->s_dvb_mux;
 
   if (mm && idnode_is_instance(&mm->mm_id, &dvb_mux_class)) {
-    const dvb_mux_conf_t *dmc = &((dvb_mux_t *)mm)->lm_tuning;
-    const char *label = mm->mm_provider_network_name;
+    const dvb_mux_t *lm = (dvb_mux_t *)mm;
+    const dvb_mux_conf_t *dmc = &lm->lm_tuning;
+    const char *label = lm->lm_dab_ensemble ?: mm->mm_provider_network_name;
     char type[32];
     size_t l = 0;
 
@@ -360,8 +361,8 @@ const idclass_t mpegts_service_class =
       .id       = "source",
       .name     = N_("Source"),
       .desc     = N_("Where the service comes from: TS, or the sub-mux "
-                     "of its transponder (an input stream, T2MI) with "
-                     "its ISI, PID and network."),
+                     "of its transponder (an input stream, T2MI, DAB) "
+                     "with its ISI, PID and ensemble or network."),
       .opts     = PO_RDONLY | PO_NOSAVE,
       .get      = mpegts_service_class_get_source,
     },
