@@ -536,6 +536,12 @@ SRCS-AVAHI = \
 SRCS-$(CONFIG_AVAHI) += $(SRCS-AVAHI)
 I18N-C += $(SRCS-AVAHI)
 
+# Warm muxes with a TS ring buffer (instant channel switching)
+SRCS-DVBBUFFER = \
+	src/dvbbuffer/ring.c
+SRCS-$(CONFIG_DVBBUFFER) += $(SRCS-DVBBUFFER)
+I18N-C += $(SRCS-DVBBUFFER)
+
 # Bonjour
 SRCS-BONJOUR = \
 	src/bonjour.c
