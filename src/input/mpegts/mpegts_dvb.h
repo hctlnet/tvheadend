@@ -98,6 +98,14 @@ typedef struct dvb_mux
    * streams are its sub-muxes (MM_TYPE_ISI, GSE); it has no services
    */
   int lm_multistream;
+
+  /*
+   * A GSE stream (MM_TYPE_GSE): what it carried at its last scan, the
+   * message of gse_stats_msg() with the microseconds it covers ("us");
+   * NULL not known
+   */
+  htsmsg_t *lm_gse_content;
+
   /*
    * DVB-S: the present tuning parameters locked at lm_tuning_ok
    * (lm_tuning_ok_key: dvb_mux_tuning_key() of them then; lm_tuning_ok_src:
@@ -229,6 +237,10 @@ void       dvb_mux_dab_pmt_pids  ( mpegts_mux_t *mm, const uint16_t *pids, int n
 void       dvb_mux_submux_link   ( dvb_mux_t *sm, const dvb_mux_t *parent );
 void       dvb_mux_submux_found  ( dvb_mux_t *sm, mpegts_mux_t *mm );
 int        dvb_mux_submux_sync   ( dvb_mux_t *sm );
+
+/* what the GSE stream of lm carried (a message of gse_stats_msg(), lm takes
+ * it; NULL: not known) - global_lock */
+void       dvb_mux_set_gse_content ( dvb_mux_t *lm, htsmsg_t *m );
 
 uint32_t   dvb_mux_tuning_key ( const dvb_mux_conf_t *dmc );
 void       dvb_mux_tuning_confirmed ( dvb_mux_t *lm, int src );
