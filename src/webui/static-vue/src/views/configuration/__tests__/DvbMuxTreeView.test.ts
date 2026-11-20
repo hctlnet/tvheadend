@@ -18,6 +18,23 @@ vi.mock('@/api/client', () => stubs.apiClient)
 vi.mock('@/api/comet', () => import('@/test/__helpers__/cometClientMock'))
 vi.mock('@/components/IdnodeEditor.vue', () => stubs.idnodeEditor)
 vi.mock('@/components/IdnodePickEntityDialog.vue', () => stubs.emptyComponent)
+/* the dialog that asks for the number: a button that answers 5 */
+vi.mock('@/components/MuxAddStreamDialog.vue', async () => {
+  const { defineComponent, h } = await import('vue')
+  return {
+    default: defineComponent({
+      name: 'MuxAddStreamDialog',
+      props: { visible: Boolean, muxName: { type: String, default: '' } },
+      emits: ['add', 'close'],
+      setup(props, { emit }) {
+        return () =>
+          props.visible
+            ? h('button', { class: 'add-stream-stub', onClick: () => emit('add', 5) }, props.muxName)
+            : null
+      },
+    }),
+  }
+})
 vi.mock('vue-router', () => stubs.vueRouter)
 vi.mock('@/composables/useConfirmDialog', () => stubs.confirmDialog)
 vi.mock('@/composables/useToastNotify', () => stubs.toastNotify)
@@ -39,6 +56,8 @@ interface FakeServer {
   services: Row[]
   /* when set: an answer waits for the promise it returns */
   gate?: (ep: string) => Promise<void> | undefined
+  /* the answers of `mpegts/mux/add_stream`, one per request */
+  addStream?: Row[]
 }
 
 /* a DVB-S network with one transponder and its service, an IPTV
@@ -118,6 +137,7 @@ function serve(s: FakeServer) {
       const limit = typeof params.limit === 'number' ? params.limit : rows.length
       return { entries: rows.slice(0, limit), total: rows.length }
     }
+    if (ep === 'mpegts/mux/add_stream') return s.addStream?.shift() ?? {}
     return {}
   })
 }
@@ -1041,5 +1061,71 @@ describe('DvbMuxTreeView scan of a whole network', () => {
     } finally {
       vi.useRealTimers()
     }
+  })
+})
+
+describe('DvbMuxTreeView add an input stream', () => {
+  const addButton = (w: Wrapper, text: string) => rowOf(w, text).find('button.mux-tree__addstream')
+
+  /* open the dialog of the row and answer it (the stub: ISI 5) */
+  async function addTo(w: Wrapper, text: string) {
+    await addButton(w, text).trigger('click')
+    await w.find('button.add-stream-stub').trigger('click')
+    await flushPromises()
+  }
+
+  it('offers it for a DVB-S2 transponder, not for its input streams or an IPTV mux', async () => {
+    const s = server()
+    multistream(s)
+    const w = await mountTree(s)
+    await expand(w, 'Astra (4)')
+    await expand(w, 'IPTV Automatic Network')
+    expect(addButton(w, '11494H').exists()).toBe(true)
+    expect(addButton(w, '12226V').exists()).toBe(true)
+    expect(addButton(w, 'ISI 14').exists()).toBe(false)
+    expect(addButton(w, 'Channel One').exists()).toBe(false)
+  })
+
+  it('adds the stream and shows it below its transponder', async () => {
+    const s = server()
+    multistream(s)
+    s.addStream = [{ uuid: 't1c' }]
+    const w = await mountTree(s)
+    await expand(w, 'Astra (4)')
+    await expand(w, '12226V')
+    await addButton(w, '12226V').trigger('click')
+    expect(w.find('button.add-stream-stub').text()).toBe('12226V')
+    s.muxes.push({
+      uuid: 't1c', name: '12226V ISI 5', network: 'Astra', network_uuid: 'n1', tstype: 7, parent_mux: 't1',
+      stream_id: 5, num_svc: 0, num_chn: 0, scan_state: 1, enabled: 1,
+    })
+    await w.find('button.add-stream-stub').trigger('click')
+    await flushPromises()
+    expect(calls('mpegts/mux/add_stream')).toEqual([{ uuid: 't1', stream_id: 5 }])
+    /* the transponder was closed: open again for the new stream */
+    expect(shows(w, 'ISI 5')).toBe(true)
+    expect(w.find('button.add-stream-stub').exists()).toBe(false)
+  })
+
+  it('asks before a mux with services becomes a transponder', async () => {
+    const s = server()
+    s.addStream = [{ error: 'the mux has services', services: 1 }, { uuid: 'x1' }]
+    const w = await mountTree(s)
+    await expand(w, 'Astra (1)')
+    await addTo(w, '11494H')
+    expect(calls('mpegts/mux/add_stream')).toEqual([
+      { uuid: 'm1', stream_id: 5 },
+      { uuid: 'm1', stream_id: 5, force: 1 },
+    ])
+    expect(stubs.toast.error).not.toHaveBeenCalled()
+  })
+
+  it('says what the server has against it', async () => {
+    const s = server()
+    s.addStream = [{ error: 'the mux is this input stream' }]
+    const w = await mountTree(s)
+    await expand(w, 'Astra (1)')
+    await addTo(w, '11494H')
+    expect(stubs.toast.error).toHaveBeenCalledWith('Failed to add the input stream: the mux is this input stream')
   })
 })
