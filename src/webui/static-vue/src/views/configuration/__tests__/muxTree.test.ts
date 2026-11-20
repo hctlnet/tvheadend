@@ -20,6 +20,7 @@ import {
   scanQueued,
   scanResultName,
   MUX_TYPE_ISI,
+  MUX_TYPE_T2MI,
   shortName,
   subMuxScan,
   subtreeCounts,
@@ -45,6 +46,22 @@ describe('buildMuxTree', () => {
     expect(labels(tree[1].children)).toEqual(['ISI 1', 'ISI 2'])
     expect(countMuxes(tree)).toBe(4)
     expect(expandableKeys(tree)).toEqual(['b'])
+  })
+
+  it('puts a T2MI mux below what carries it: a transponder, or one of its input streams', () => {
+    const tree = buildMuxTree([
+      { uuid: 'a', name: '12285V' },
+      { uuid: 'x', name: '12285V T2MI 4097', parent_mux: 'a', tstype: MUX_TYPE_T2MI, pid: 4097 },
+      { uuid: 'w', name: '12285V T2MI 4096', parent_mux: 'a', tstype: MUX_TYPE_T2MI, pid: 4096 },
+      { uuid: 't', name: '12606V', multistream: true },
+      { uuid: 'i', name: '12606V ISI 5', parent_mux: 't', tstype: MUX_TYPE_ISI, stream_id: 5 },
+      /* it has the ISI of its input stream in its tuning */
+      { uuid: 'y', name: '12606V ISI 5 T2MI 4096 PLP 1', parent_mux: 'i', tstype: MUX_TYPE_T2MI, stream_id: 5, pid: 4096 },
+    ])
+    expect(labels(tree[0].children)).toEqual(['T2MI 4096', 'T2MI 4097'])
+    expect(labels(tree[1].children)).toEqual(['ISI 5'])
+    expect(labels(tree[1].children[0].children)).toEqual(['T2MI 4096 PLP 1'])
+    expect(countMuxes(tree)).toBe(6)
   })
 
   it('sorts frequencies numerically', () => {
@@ -259,6 +276,7 @@ describe('labels in the language of the UI', () => {
   it('translates the mux type, the service type and the scan result', async () => {
     await switchLocale({ 'TS (ISI)': 'TS (Eingangsstrom)', Radio: 'Hörfunk', 'OK (partial)': 'OK (teilweise)' })
     expect(muxTypeName(MUX_TYPE_ISI)).toBe('TS (Eingangsstrom)')
+    expect(muxTypeName(MUX_TYPE_T2MI)).toBe('T2MI')
     expect(muxTypeName(0)).toBe('TS')
     expect(muxTypeName(undefined)).toBe('TS')
     expect(serviceTypeName(0x02)).toBe('Hörfunk')

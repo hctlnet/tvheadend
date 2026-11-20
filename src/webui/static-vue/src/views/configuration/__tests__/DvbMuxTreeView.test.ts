@@ -255,6 +255,63 @@ describe('DvbMuxTreeView sub-muxes', () => {
   })
 })
 
+describe('DvbMuxTreeView T2MI', () => {
+  /* a transponder with a T2MI stream in its service 800 */
+  function t2mi(s: FakeServer) {
+    s.muxes.push(
+      {
+        uuid: 'p1', name: '12285V', network: 'Astra', network_uuid: 'n1', tstype: 0, delsys: 'DVB-S2',
+        num_svc: 1, num_chn: 0, scan_state: 0, scan_result: 1, enabled: 1,
+      },
+      {
+        uuid: 'p1a', name: '12285V T2MI 4096', network: 'Astra', network_uuid: 'n1', tstype: 1, parent_mux: 'p1',
+        pid: 4096, carrier_sid: 800, delsys: 'DVB-S2', num_svc: 10, num_chn: 0, scan_state: 0, scan_result: 1,
+        enabled: 1,
+      },
+    )
+    s.services.push({
+      uuid: 's8', svcname: 'MX', sid: 800, network: 'Astra', multiplex_uuid: 'p1', enabled: true,
+      encrypted: true, caid: '2600:000000',
+    })
+    s.networks[0].num_mux = 3
+  }
+
+  it('shows a T2MI mux below its transponder, with its type and the SID of its carrier service', async () => {
+    const s = server()
+    t2mi(s)
+    const w = await mountTree(s)
+    await expand(w, 'Astra (3)')
+    const row = rowOf(w, 'T2MI 4096')
+    expect(row.text()).toMatch(/^T2MI 4096\s*T2MI/)
+    expect(row.find('.mux-tree__sid').text()).toBe('800')
+    expect(row.find('.mux-tree__sid').attributes('title')).toBe('Carrier service: SID 800')
+    expect(row.find('.mux-tree__lock').exists()).toBe(false)
+    expect(String(calls('mpegts/mux/grid')[0].list).split(',')).toEqual(
+      expect.arrayContaining(['pid', 'carrier_sid']),
+    )
+  })
+
+  it('names the carrier service once the services of the network are loaded', async () => {
+    const s = server()
+    t2mi(s)
+    const w = await mountTree(s)
+    await expand(w, 'Astra (3)')
+    await expand(w, 'Services (1)')
+    const cell = rowOf(w, 'T2MI 4096').find('.mux-tree__sid')
+    expect(cell.text()).toBe('800 · MX')
+    expect(cell.attributes('title')).toBe('Carrier service MX (SID 800), encrypted: 2600')
+    expect(cell.find('.mux-tree__lock').exists()).toBe(true)
+  })
+
+  it('leaves the SID column of an input stream empty', async () => {
+    const s = server()
+    multistream(s)
+    const w = await mountTree(s)
+    await expand(w, 'Astra (4)')
+    expect(rowOf(w, 'ISI 14').find('.mux-tree__sid').text()).toBe('')
+  })
+})
+
 describe('DvbMuxTreeView columns', () => {
   it('shows the tuning and the provider network of a transponder in its row', async () => {
     const w = await mountTree()

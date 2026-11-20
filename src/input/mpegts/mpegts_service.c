@@ -163,7 +163,7 @@ mpegts_service_mux_type_name ( int type, char *buf, size_t len )
 #endif
 
 /* read only, for the service grids: the mux the service comes from, a
- * sub-mux with its type and input stream */
+ * sub-mux with its type, input stream and PID */
 static const void *
 mpegts_service_class_get_source ( void *ptr )
 {
@@ -188,6 +188,8 @@ mpegts_service_class_get_source ( void *ptr )
     if (dmc->dmc_fe_stream_id >= 0 && l < sizeof(buf))
       l += snprintf(buf + l, sizeof(buf) - l, "%sISI %d", l ? " · " : "",
                     dmc->dmc_fe_stream_id);
+    if (mpegts_mux_in_pid(mm) && dmc->dmc_fe_pid > 0 && l < sizeof(buf))
+      l += snprintf(buf + l, sizeof(buf) - l, " · PID %d", dmc->dmc_fe_pid);
     if (mm->mm_type != MM_TYPE_TS && label && *label && l < sizeof(buf))
       snprintf(buf + l, sizeof(buf) - l, " · %s", label);
   }
@@ -358,8 +360,8 @@ const idclass_t mpegts_service_class =
       .id       = "source",
       .name     = N_("Source"),
       .desc     = N_("Where the service comes from: TS, or the sub-mux "
-                     "of its transponder (an input stream) with its ISI "
-                     "and network."),
+                     "of its transponder (an input stream, T2MI) with "
+                     "its ISI, PID and network."),
       .opts     = PO_RDONLY | PO_NOSAVE,
       .get      = mpegts_service_class_get_source,
     },
