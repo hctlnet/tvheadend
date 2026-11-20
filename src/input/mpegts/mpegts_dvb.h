@@ -67,6 +67,14 @@ typedef struct dvb_mux
   char *lm_parent;
 
   /*
+   * DVB-S2 stream as the Neumo driver reported it at the last lock: the
+   * MATYPE byte of the BBHEADER (-1 = not known) and the MODCOD of a CCM
+   * stream (0 = not known, variable for ACM/VCM)
+   */
+  int lm_matype;
+  int lm_modcod;
+
+  /*
    * A sub-mux: the service of the transponder it is carried in; the stream
    * then goes through the descrambler (0: the PID only, not scrambled)
    */
