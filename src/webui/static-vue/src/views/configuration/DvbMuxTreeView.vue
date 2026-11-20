@@ -7,8 +7,10 @@
  * Configuration → DVB Inputs → Muxes.
  *
  * The muxes as a tree: network → transponder → the sub-muxes carried in
- * it (the input streams of a multistream transponder), and the services
- * of each mux.
+ * it (the input streams of a multistream transponder, T2MI) → theirs,
+ * and the services of each mux. A sub-mux in a PID names the service it
+ * is carried in in the SID column (by name once the services of its
+ * network are loaded).
  * A double click opens the editor of the mux, service or network.
  *
  * Rows are selected by a click (Ctrl/Cmd adds one, Shift a range) or
@@ -334,6 +336,28 @@ function serviceTitle(s: ServiceRow): string {
   const parts = [`SID ${s.sid}`]
   if (s.encrypted) parts.push(t('encrypted: {0}', s.caid ?? ''))
   return parts.join(' — ')
+}
+
+/* the service a sub-mux in a PID is carried in (a T2MI stream): known by
+ * name once the services of its network are loaded */
+function carrierOf(row: MuxRow): ServiceRow | null {
+  if (!row.carrier_sid || !row.parent_mux || !row.network_uuid) return null
+  return services.value[row.network_uuid]?.get(row.parent_mux)?.find((x) => x.sid === row.carrier_sid) ?? null
+}
+
+function carrierLabel(row: MuxRow): string {
+  if (!row.carrier_sid) return ''
+  const name = carrierOf(row)?.svcname
+  return name ? `${row.carrier_sid} · ${name}` : String(row.carrier_sid)
+}
+
+function carrierTitle(row: MuxRow): string | undefined {
+  if (!row.carrier_sid) return undefined
+  const c = carrierOf(row)
+  if (!c) return t('Carrier service: SID {0}', row.carrier_sid)
+  return c.encrypted
+    ? t('Carrier service {0} (SID {1}), encrypted: {2}', c.svcname ?? '', row.carrier_sid, caidList(c.caid))
+    : t('Carrier service {0} (SID {1})', c.svcname ?? '', row.carrier_sid)
 }
 
 /* a copy of the set with the key in it or not (the sets are replaced, so
@@ -1505,7 +1529,11 @@ onMounted(loadNetworks)
             <template v-if="r.node">
               <template v-if="!r.wide">
                 <td>{{ muxTypeName(r.node.row.tstype) }}</td>
-                <td />
+                <!-- a sub-mux in a PID: the service it is carried in -->
+                <td class="mux-tree__sid" :title="carrierTitle(r.node.row)">
+                  <Lock v-if="carrierOf(r.node.row)?.encrypted" class="mux-tree__lock" :size="12" :stroke-width="2" />
+                  {{ carrierLabel(r.node.row) }}
+                </td>
               </template>
               <td>
                 <span v-if="scanStateLabel(r.node.row)" class="mux-tree__busy">

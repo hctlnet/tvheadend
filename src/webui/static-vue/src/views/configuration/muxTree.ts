@@ -3,7 +3,8 @@
 
 /*
  * The muxes of a network as a tree: transponders and the sub-muxes
- * carried in them (the input streams of a multistream transponder).
+ * carried in them (the input streams of a multistream transponder,
+ * T2MI) and theirs.
  *
  * A sub-mux names its transponder in `parent_mux` (uuid, DVB muxes
  * only); the depth is not limited here.
@@ -23,6 +24,10 @@ export interface MuxRow {
   multistream?: boolean
   tstype?: number
   stream_id?: number
+  /* a sub-mux in a PID (T2MI): the PID, and the service of what carries
+   * it that the PID belongs to (0: none) */
+  pid?: number
+  carrier_sid?: number
   pnetwork_name?: string | null
   delsys?: string
   modulation?: string
@@ -48,7 +53,7 @@ export interface MuxRow {
 /* the fields of the mux grid the tree uses: the `list` of its requests,
  * the server sends only these (and the uuid) */
 export const MUX_FIELDS = [
-  'name', 'network_uuid', 'parent_mux', 'multistream', 'tstype', 'stream_id',
+  'name', 'network_uuid', 'parent_mux', 'multistream', 'tstype', 'stream_id', 'pid', 'carrier_sid',
   'pnetwork_name', 'delsys', 'modulation', 'constellation', 'fec', 'symbolrate', 'rolloff', 'pilot',
   'pls_mode', 'pls_code', 'bandwidth', 'scan_result', 'scan_state', 'num_svc', 'num_chn', 'enabled',
   'frequency', 'polarisation',
@@ -66,12 +71,14 @@ export interface MuxTreeNode {
 
 /* mm_type, MM_TYPE_* in src/input/mpegts.h */
 export const MUX_TYPE_TS = 0
+export const MUX_TYPE_T2MI = 1
 export const MUX_TYPE_ISI = 7
 
 /* the type as the tree shows it */
 const TYPE_LABELS: Record<number, () => string> = {
   [MUX_TYPE_TS]: () => t('TS'),
   [MUX_TYPE_ISI]: () => t('TS (ISI)'),
+  [MUX_TYPE_T2MI]: () => t('T2MI'),
 }
 
 export function muxTypeName(type: number | undefined): string {
