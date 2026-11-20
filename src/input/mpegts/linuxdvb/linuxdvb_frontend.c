@@ -629,13 +629,25 @@ static int
 linuxdvb_frontend_get_grace ( mpegts_input_t *mi, mpegts_mux_t *mm )
 {
   linuxdvb_frontend_t *lfe = (linuxdvb_frontend_t*)mi, *lfe2 = NULL;
+  int r;
   /* a slave tunes with the satconf of its master (the RF input): its
    * switch and rotor times count for the slave as well */
   if (lfe->lfe_master)
     lfe2 = (linuxdvb_frontend_t *)idnode_find(lfe->lfe_master, &linuxdvb_frontend_class, NULL);
   if (lfe2 && lfe2->lfe_satconf)
-    return linuxdvb_satconf_get_grace(lfe2->lfe_satconf, mm);
-  return lfe->lfe_satconf ? linuxdvb_satconf_get_grace(lfe->lfe_satconf, mm) : lfe->lfe_grace_period;
+    r = linuxdvb_satconf_get_grace(lfe2->lfe_satconf, mm);
+  else
+    r = lfe->lfe_satconf ? linuxdvb_satconf_get_grace(lfe->lfe_satconf, mm) : lfe->lfe_grace_period;
+#if ENABLE_LINUXDVB_NEUMO
+  /* a narrow carrier often needs more than one search, each takes 3-5 s
+   * (see linuxdvb_frontend_search_again) */
+  if (mm && lfe->lfe_neumo_supported && lfe->lfe_type == DVB_TYPE_S) {
+    uint32_t sr = ((dvb_mux_t *)mm)->lm_tuning.u.dmc_fe_qpsk.symbol_rate;
+    if (sr > 0 && sr < 2500000)
+      r += 10;
+  }
+#endif
+  return r;
 }
 
 #if ENABLE_LINUXDVB_NEUMO
@@ -1429,6 +1441,110 @@ linuxdvb_frontend_blindscan_update_mux(linuxdvb_frontend_t *lfe, dvb_mux_t *lm)
 }
 #endif /* ENABLE_LINUXDVB_NEUMO */
 
+#if ENABLE_LINUXDVB_NEUMO
+/*
+ * A blind search of a narrow carrier can lock another carrier next to it, a
+ * wider one mostly (16E 12687.1H, 406 kBd: a 7425 kBd carrier 0.3 MHz away).
+ * Its symbol rate tells: the one found if it is not about that of the mux
+ * (+-25%), else 0.
+ * A blind tune of a wider carrier (blind scan "Scanning"/"Always") searches
+ * the 10 MHz of the driver: without its carrier it can lock a neighbour. As
+ * blind tuning is there for an outdated symbol rate too, that one counts as
+ * another carrier only when it is also off the frequency of the mux, so that
+ * the two do not overlap (a neighbour of about the same symbol rate is not
+ * told apart). A frequency read outside the search range is not judged.
+ */
+static uint32_t
+linuxdvb_frontend_other_carrier ( linuxdvb_frontend_t *lfe, mpegts_mux_t *mm )
+{
+  struct dtv_property prop[2] = { { .cmd = DTV_SYMBOL_RATE }, { .cmd = DTV_FREQUENCY } };
+  struct dtv_properties props = { .num = 2, .props = prop };
+  uint32_t want, got, df;
+
+  if (!lfe->lfe_blind)
+    return 0;
+  want = ((dvb_mux_t *)mm)->lm_tuning.u.dmc_fe_qpsk.symbol_rate;
+  if (want == 0 || linuxdvb_fe_get_property(lfe->lfe_fe_fd, lfe->lfe_neumo_detected, &props))
+    return 0;
+  got = prop[0].u.data;
+  if (got == 0 || (got >= want - want / 4 && got <= want + want / 4))
+    return 0;
+  if (lfe->lfe_blind_narrow)
+    return got;
+  /* frequencies in kHz (as tuned: lfe_freq), symbol rates in symbols/s */
+  df = deltaU32(prop[1].u.data, (uint32_t)lfe->lfe_freq);
+  if (prop[1].u.data == 0 || lfe->lfe_freq <= 0 || df > 20000 ||
+      2 * (uint64_t)df < ((uint64_t)want + got) / 1000)
+    return 0;
+  return got;
+}
+
+/*
+ * The search range of a blind tune of a narrow carrier (the full width, the
+ * driver searches half of it either side): two symbol rates either side, at
+ * least 2 MHz, as the frequency of a mux can be 1 MHz off (19.2E 11693V),
+ * not the 10 MHz of the driver. A wider neighbour can still be locked (its
+ * spectrum reaches into the range): linuxdvb_frontend_other_carrier()
+ */
+static uint32_t
+linuxdvb_frontend_narrow_range ( uint32_t symbol_rate )
+{
+  uint64_t r = (uint64_t)symbol_rate * 4;
+
+  return r < 4000000 ? 4000000 : r > 10000000 ? 10000000 : (uint32_t)r;
+}
+
+/*
+ * On a narrow carrier a search of the Neumo driver often fails: it ends
+ * without the carrier (TIMEDOUT), or the demodulator locks and the packet
+ * delineator does not (LOCK without VITERBI; the driver waits up to 3 s for
+ * it). A new search mostly succeeds, so search again while the subscription
+ * waits.
+ *
+ * After a search without the carrier the driver searches again by itself,
+ * 0.1-0.5 s later. A driver that reports no status while a search runs
+ * (FE_READ_STATUS answered without waiting for it) shows each search ending:
+ * tune again once two of them failed, the one of the tune and the driver's
+ * own. With a driver that makes the reader wait for the running search, the
+ * status stays TIMEDOUT: tune again after 3 s, about two searches as well.
+ */
+static int
+linuxdvb_frontend_search_again ( linuxdvb_frontend_t *lfe, fe_status_t fe_status )
+{
+  int prev;
+
+  if (!lfe->lfe_neumo_supported || lfe->lfe_type != DVB_TYPE_S ||
+      lfe->lfe_freq <= 0)
+    return 0;
+  prev = lfe->lfe_search_status;
+  lfe->lfe_search_status = fe_status;
+  if (fe_status & FE_TIMEDOUT) {
+    if (!(prev & FE_TIMEDOUT) && lfe->lfe_search_fails++ == 0)
+      lfe->lfe_search_failed = mclk();
+    if (lfe->lfe_search_fails < 2 && mclk() - lfe->lfe_search_failed < sec2mono(3))
+      return 0;
+  } else if ((fe_status & FE_HAS_LOCK) && !(fe_status & FE_HAS_VITERBI)) {
+    if (prev != (int)fe_status) {
+      lfe->lfe_search_failed = mclk();
+      return 0;
+    }
+    if (mclk() - lfe->lfe_search_failed < ms2mono(3500))
+      return 0;
+  } else {
+    /* a search runs, or the carrier is locked */
+    if (fe_status & FE_HAS_LOCK) {
+      lfe->lfe_search_fails = 0;
+      lfe->lfe_search_failed = 0;
+    }
+    return 0;
+  }
+  lfe->lfe_search_fails = 0;
+  lfe->lfe_search_failed = 0;
+  lfe->lfe_search_status = 0;
+  return 1;
+}
+#endif
+
 static void
 linuxdvb_frontend_monitor ( void *aux )
 {
@@ -1490,7 +1606,13 @@ linuxdvb_frontend_monitor ( void *aux )
     /* TODO: check error value */
     return;
 
-  } else if (fe_status & FE_HAS_LOCK)
+  } else if ((fe_status & FE_HAS_LOCK) &&
+             /* the Neumo driver reports LOCK when the demodulator locks; the
+              * packets follow once the packet delineator has locked as well
+              * (VITERBI), on a narrow carrier seconds later. BBFrames flow
+              * without it. */
+             (!lfe->lfe_neumo_supported ||
+              (fe_status & FE_HAS_VITERBI)))
     status = SIGNAL_GOOD;
   else if (fe_status & (FE_HAS_SYNC | FE_HAS_VITERBI | FE_HAS_CARRIER))
     status = SIGNAL_BAD;
@@ -1535,6 +1657,22 @@ linuxdvb_frontend_monitor ( void *aux )
 
     /* Locked */
     if (status == SIGNAL_GOOD) {
+#if ENABLE_LINUXDVB_NEUMO
+      uint32_t other = linuxdvb_frontend_other_carrier(lfe, mm);
+      if (other) {
+        /* not the carrier of the mux: no input from it; search again, once
+         * the last search had time to end */
+        mtimer_arm_rel(&lfe->lfe_monitor_timer, linuxdvb_frontend_monitor,
+                       lfe, ms2mono(50));
+        if (mclk() >= lfe->lfe_other_retry) {
+          tvhdebug(LS_LINUXDVB, "%s - found a carrier of %u Bd, not of %u Bd, searching again",
+                   buf, other, ((dvb_mux_t *)mm)->lm_tuning.u.dmc_fe_qpsk.symbol_rate);
+          lfe->lfe_other_retry = mclk() + sec2mono(2);
+          linuxdvb_frontend_tune0(lfe, mmi, lfe->lfe_freq);
+        }
+        return;
+      }
+#endif
       tvhdebug(LS_LINUXDVB, "%s - locked", buf);
       lfe->lfe_locked = 1;
 #if ENABLE_LINUXDVB_NEUMO
@@ -1566,6 +1704,15 @@ linuxdvb_frontend_monitor ( void *aux )
     } else {
       mtimer_arm_rel(&lfe->lfe_monitor_timer, linuxdvb_frontend_monitor,
                      lfe, ms2mono(50));
+
+#if ENABLE_LINUXDVB_NEUMO
+      if (linuxdvb_frontend_search_again(lfe, fe_status)) {
+        tvhdebug(LS_LINUXDVB, "%s - no lock (%s), searching again", buf,
+                 (fe_status & FE_TIMEDOUT) ? "no carrier" : "no packets");
+        linuxdvb_frontend_tune0(lfe, mmi, lfe->lfe_freq);
+        return;
+      }
+#endif
 
       /* Monitor 1 per sec */
       if (mclk() < lfe->lfe_monitor)
@@ -2107,6 +2254,9 @@ linuxdvb_frontend_clear
   lfe->lfe_locked  = 0;
   lfe->lfe_status  = 0;
   lfe->lfe_status2 = 0;
+  lfe->lfe_search_failed = 0;
+  lfe->lfe_search_status = 0;
+  lfe->lfe_search_fails = 0;
 
 #if DVB_API_VERSION >= 5
   static struct dtv_property clear_p[] = {
@@ -2443,6 +2593,8 @@ linuxdvb_frontend_tune0
 #if ENABLE_LINUXDVB_NEUMO
     /* Neumo driver: use blind tuning for auto-detection
      * blindscan_mode: 0=never, 1=scanning only, 2=always */
+    lfe->lfe_blind_narrow = 0;
+    lfe->lfe_blind = 0;
     if (lfe->lfe_neumo_supported &&
         (config.blindscan_mode == 2 ||
          (config.blindscan_mode == 1 &&
@@ -2452,7 +2604,23 @@ linuxdvb_frontend_tune0
            ((mpegts_mux_t *)lm)->mm_scan_state == MM_SCAN_STATE_PEND ||
            ((mpegts_mux_t *)lm)->mm_scan_state == MM_SCAN_STATE_IPEND)))) {
       S2CMD(DTV_ALGORITHM,       ALGORITHM_BLIND);
+      lfe->lfe_blind = 1;
       //S2CMD(DTV_SEARCH_RANGE,    p.u.qpsk.symbol_rate / 4);
+      if (p.u.qpsk.symbol_rate > 0 && p.u.qpsk.symbol_rate < 2500000) {
+        S2CMD(DTV_SEARCH_RANGE,  linuxdvb_frontend_narrow_range(p.u.qpsk.symbol_rate));
+        lfe->lfe_blind_narrow = 1;
+      }
+    } else if (lfe->lfe_neumo_supported && p.u.qpsk.symbol_rate < 2500000) {
+      /* a narrow carrier: after a cold start the demodulator locks, but the
+       * packet delineator mostly does not (999 kBd: not within 5 s); a blind
+       * tune with the known symbol rate delivers after 2-3.5 s */
+      S2CMD(DTV_ALGORITHM,       ALGORITHM_BLIND);
+      S2CMD(DTV_DELIVERY_SYSTEM, SYS_AUTO);
+      lfe->lfe_blind = 1;
+      if (p.u.qpsk.symbol_rate > 0) {
+        S2CMD(DTV_SEARCH_RANGE,  linuxdvb_frontend_narrow_range(p.u.qpsk.symbol_rate));
+        lfe->lfe_blind_narrow = 1;
+      }
     } else if (lfe->lfe_neumo_supported) {
       /* not set, the algorithm is 0 = ALGORITHM_WARM: a warm start finds
        * the carrier only when frequency and symbol rate are (nearly)
