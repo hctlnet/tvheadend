@@ -23,6 +23,7 @@
 #include "gse_stats_msg.h"
 #include "queue.h"
 #include "settings.h"
+#include "notify.h"
 #include "t2mi.h"
 
 #include <sys/types.h>
@@ -1816,6 +1817,104 @@ dvb_mux_tuning_failed ( dvb_mux_t *lm )
   if (lm->lm_tuning_failed_first <= lm->lm_tuning_ok)
     lm->lm_tuning_failed_first = now;
   lm->lm_tuning_failed = now;
+}
+
+/* a mux a blindscan created whose scan failed goes again (a tasklet: the
+ * scan is still finishing) */
+static void
+dvb_mux_blindscan_delete_cb ( void *opaque, int disarmed )
+{
+  char *uuid = opaque;
+  mpegts_mux_t *mm;
+
+  if (!disarmed) {
+    tvh_mutex_lock(&global_lock);
+    mm = mpegts_mux_find(uuid);
+    /* nothing found, or the carrier is another mux (dvb_mux_blindscan_done) */
+    if (mm && idnode_is_instance(&mm->mm_id, &dvb_mux_class) &&
+        (((dvb_mux_t *)mm)->lm_blindscan_tune & DVB_MUX_BLINDSCAN_NEW) &&
+        mm->mm_scan_state == MM_SCAN_STATE_IDLE) {
+      tvhinfo(LS_MPEGTS, "%s - blindscan: deleted", mm->mm_nicename);
+      mm->mm_delete(mm, 1);
+    }
+    tvh_mutex_unlock(&global_lock);
+  }
+  free(uuid);
+}
+
+/* another transponder of the network where a new mux locked: the same
+ * polarisation, within a quarter of the symbol rates (1 MHz at least) */
+static dvb_mux_t *
+dvb_mux_blindscan_same ( dvb_mux_t *lm )
+{
+  mpegts_mux_t *mm;
+  dvb_mux_t *lm2;
+  uint32_t tol;
+
+  LIST_FOREACH(mm, &lm->mm_network->mn_muxes, mm_network_link) {
+    if (mm == (mpegts_mux_t *)lm || !idnode_is_instance(&mm->mm_id, &dvb_mux_class) ||
+        mpegts_mux_is_submux(mm))
+      continue;
+    lm2 = (dvb_mux_t *)mm;
+    if (lm2->lm_tuning.dmc_fe_type != DVB_TYPE_S ||
+        lm2->lm_tuning.u.dmc_fe_qpsk.polarisation != lm->lm_tuning.u.dmc_fe_qpsk.polarisation)
+      continue;
+    tol = MAX(1000, MIN(lm2->lm_tuning.u.dmc_fe_qpsk.symbol_rate,
+                        lm->lm_tuning.u.dmc_fe_qpsk.symbol_rate) / 4000);
+    if (deltaU32(lm2->lm_tuning.dmc_fe_freq, lm->lm_tuning.dmc_fe_freq) <= tol)
+      return lm2;
+  }
+  return NULL;
+}
+
+void
+dvb_mux_blindscan_done ( dvb_mux_t *lm, int result )
+{
+  mpegts_mux_t *mm = (mpegts_mux_t *)lm, *same = NULL;
+  htsmsg_t *m = htsmsg_create_map();
+  char ubuf[UUID_HEX_SIZE];
+
+  htsmsg_add_str(m, "uuid", idnode_uuid_as_str(&mm->mm_network->mn_id, ubuf));
+  htsmsg_add_u32(m, "freq", lm->lm_tuning.dmc_fe_freq);
+  htsmsg_add_str(m, "pol", lm->lm_tuning.u.dmc_fe_qpsk.polarisation == DVB_POLARISATION_VERTICAL ? "V" : "H");
+  htsmsg_add_u32(m, "sr", lm->lm_tuning.u.dmc_fe_qpsk.symbol_rate);
+  htsmsg_add_str(m, "result", result == MM_SCAN_FAIL ? "fail" : "ok");
+  /* the demodulator locked: what it found (a failed scan had no data) -
+   * with the MATYPE of a DVB-S2 stream (TS or generic, single stream or
+   * multistream) and the sub-muxes the scan made (input streams, ...) */
+  if (lm->lm_blindscan_tune & DVB_MUX_BLINDSCAN_LOCKED) {
+    mpegts_mux_t *mm2;
+    int subs = 0;
+    htsmsg_add_bool(m, "locked", 1);
+    htsmsg_add_str(m, "delsys", dvb_delsys2str(lm->lm_tuning.dmc_fe_delsys));
+    htsmsg_add_str(m, "modulation", dvb_qam2str(lm->lm_tuning.dmc_fe_modulation));
+    htsmsg_add_str(m, "fec", dvb_fec2str(lm->lm_tuning.u.dmc_fe_qpsk.fec_inner));
+    if (lm->lm_matype >= 0)
+      htsmsg_add_s32(m, "matype", lm->lm_matype);
+    idnode_uuid_as_str(&mm->mm_id, ubuf);
+    LIST_FOREACH(mm2, &mm->mm_network->mn_muxes, mm_network_link)
+      if (idnode_is_instance(&mm2->mm_id, &dvb_mux_class) &&
+          ((dvb_mux_t *)mm2)->lm_parent && !strcmp(((dvb_mux_t *)mm2)->lm_parent, ubuf))
+        subs++;
+    htsmsg_add_s32(m, "submuxes", subs);
+  }
+  /* a new mux that locked a transponder the network has: that one */
+  if (result != MM_SCAN_FAIL && (lm->lm_blindscan_tune & DVB_MUX_BLINDSCAN_NEW))
+    same = (mpegts_mux_t *)dvb_mux_blindscan_same(lm);
+  if (same) {
+    tvhinfo(LS_MPEGTS, "%s - blindscan: the carrier is %s, deleted", mm->mm_nicename,
+            same->mm_nicename);
+    htsmsg_add_str(m, "same", idnode_uuid_as_str(&same->mm_id, ubuf));
+    htsmsg_add_str(m, "same_name", same->mm_nicename);
+  }
+  htsmsg_add_str(m, "mux", idnode_uuid_as_str(&mm->mm_id, ubuf));
+  if ((result == MM_SCAN_FAIL && (lm->lm_blindscan_tune & DVB_MUX_BLINDSCAN_NEW)) || same) {
+    htsmsg_add_bool(m, "deleted", 1);
+    tasklet_arm_alloc(dvb_mux_blindscan_delete_cb, strdup(ubuf));
+  } else {
+    lm->lm_blindscan_tune = 0;
+  }
+  notify_by_msg("blindscan", m, 0, 0);
 }
 
 /* the present parameters locked, and since then scans did not fail for
