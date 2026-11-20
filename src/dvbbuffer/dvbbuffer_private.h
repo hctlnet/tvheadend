@@ -27,6 +27,8 @@ typedef struct dvbbuffer_conf {
   int      enabled;
   uint32_t buffer_sec;        /* history kept per warm mux */
   uint32_t max_bitrate_kbps;  /* ring is sized for this rate */
+  uint32_t warm_weight;       /* subscription weight of warm muxes */
+  uint32_t warm_max;          /* max. number of warm muxes */
 } dvbbuffer_conf_t;
 
 extern dvbbuffer_conf_t dvbbuffer_conf;
@@ -62,5 +64,14 @@ int  dvbbuffer_mux_wanted(mpegts_mux_t *mm);
 int  dvbbuffer_mux_prebuffer(mpegts_mux_t *mm);
 /* upper bound of the TS bitrate from the tuning parameters, kbit/s, 0 = unknown */
 uint32_t dvbbuffer_mux_bitrate(mpegts_mux_t *mm);
+
+/*
+ * Warm mux manager (warm.c), global_lock
+ */
+void dvbbuffer_warm_init(void);
+void dvbbuffer_warm_done(void);
+void dvbbuffer_warm_reconcile(void);
+void dvbbuffer_warm_mux_delete(mpegts_mux_t *mm);
+void dvbbuffer_warm_tuner_freed(void);
 
 #endif /* __TVH_DVBBUFFER_PRIVATE_H__ */

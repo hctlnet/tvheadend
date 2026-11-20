@@ -437,6 +437,8 @@ void streaming_target_init(streaming_target_t *st,
 void streaming_queue_init
   (streaming_queue_t *sq, int reject_filter, size_t maxsize);
 
+void streaming_target_set_reject_filter(streaming_target_t *st, int reject_filter);
+
 void streaming_queue_clear(struct streaming_message_queue *q);
 
 void streaming_queue_deinit(streaming_queue_t *sq);
