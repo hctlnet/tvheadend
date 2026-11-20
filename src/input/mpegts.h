@@ -1108,7 +1108,7 @@ void tsdebug_encode_keys
   ( uint8_t *dst, uint16_t sid, uint16_t pid,
     uint8_t keytype, uint8_t keylen, uint8_t *even, uint8_t *odd );
 
-void tsdebug_check_tspkt( mpegts_mux_t *mm, uint8_t *pkt, int len );
+void tsdebug_check_tspkt( mpegts_mux_t *mm, const uint8_t *pkt, int len );
 
 void mpegts_table_dispatch(const uint8_t *sec, size_t r, void *mt);
 static inline void mpegts_table_grab(mpegts_table_t *mt)
