@@ -30,6 +30,11 @@ typedef struct dvb_network
   dvb_fe_type_t ln_type;
 
   /*
+   * Search DAB ensembles while scanning (libdvbdab)
+   */
+  int ln_dab_probe;
+
+  /*
    * Its muxes are being loaded (a sub-mux may come before its transponder)
    */
   int ln_loading;
@@ -126,6 +131,15 @@ dvb_mux_t *dvb_network_find_mux
  * of the PLP, if one is set; DAB-MPE: from the same IP source) */
 dvb_mux_t *dvb_network_find_submux
   ( dvb_network_t *ln, const dvb_mux_conf_t *dmc, int type );
+
+dvb_mux_t *dvb_network_find_mux_dab_mpe
+  ( dvb_network_t *ln, const dvb_mux_conf_t *dmc );
+
+dvb_mux_t *dvb_network_find_mux_dab_eti
+  ( dvb_network_t *ln, const dvb_mux_conf_t *dmc );
+
+dvb_mux_t *dvb_network_find_mux_dab_tsni
+  ( dvb_network_t *ln, const dvb_mux_conf_t *dmc );
 
 /* T2MI: a T2-MI stream in a service of the transponder (its PMT) */
 void dvb_mux_t2mi_found ( mpegts_mux_t *mm, uint16_t pid, uint16_t sid );
