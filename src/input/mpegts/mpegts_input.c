@@ -1368,7 +1368,7 @@ mpegts_input_table_restart
 }
 
 static mpegts_table_feed_t *
-mpegts_input_table_feed_create ( mpegts_input_t *mi, mpegts_mux_t *mm, uint8_t *tsb, int llen )
+mpegts_input_table_feed_create ( mpegts_input_t *mi, mpegts_mux_t *mm, const uint8_t *tsb, int llen )
 {
   mpegts_table_feed_t *mtf;
 
@@ -1424,19 +1424,19 @@ mpegts_input_table_waiting ( mpegts_input_t *mi, mpegts_mux_t *mm )
 
 static int
 mpegts_input_process
-  ( mpegts_input_t *mi, mpegts_packet_t *mpkt )
+  ( mpegts_input_t *mi, mpegts_mux_t *mm,
+    const uint8_t *data, int len, int cc_restart )
 {
   uint16_t pid, pid2;
   uint8_t cc, cc2;
-  uint8_t *tsb = mpkt->mp_data, *tsb2, *tsb2_end;
-  int len = mpkt->mp_len, llen;
+  const uint8_t *tsb = data, *tsb2, *tsb2_end;
+  int llen;
   int type = 0, f;
   mpegts_pid_t *mp;
   mpegts_pid_sub_t *mps;
   service_t *s;
   elementary_stream_t *st;
   int table_wakeup = 0;
-  mpegts_mux_t *mm = mpkt->mp_mux;
   mpegts_mux_instance_t *mmi;
   mpegts_table_feed_t *mtf;
   uint64_t tspos;
@@ -1446,7 +1446,7 @@ mpegts_input_process
 
   assert(mm == mmi->mmi_mux);
 
-  if (mpkt->mp_cc_restart) {
+  if (cc_restart) {
     LIST_FOREACH(s, &mm->mm_transports, s_active_link)
       TAILQ_FOREACH(st, &s->s_components.set_all, es_link)
         st->es_cc = -1;
@@ -1602,11 +1602,11 @@ done:
   }
 
   /* Raw stream */
-  if (tsb != mpkt->mp_data &&
+  if (tsb != data &&
       LIST_FIRST(&mmi->mmi_streaming_pad.sp_targets) != NULL) {
 
     streaming_message_t sm;
-    pktbuf_t *pb = pktbuf_alloc(mpkt->mp_data, tsb - mpkt->mp_data);
+    pktbuf_t *pb = pktbuf_alloc(data, tsb - data);
     memset(&sm, 0, sizeof(sm));
     sm.sm_type = SMT_MPEGTS;
     sm.sm_data = pb;
@@ -1619,10 +1619,19 @@ done:
     tvh_cond_signal(&mi->mi_table_cond, 0);
 
   /* Bandwidth monitoring */
-  llen = tsb - mpkt->mp_data;
+  llen = tsb - data;
   atomic_add(&mmi->tii_stats.bps, llen);
   mm->mm_input_pos += llen;
   return llen;
+}
+
+static int
+mpegts_input_process_packet
+  ( mpegts_input_t *mi, mpegts_packet_t *mpkt )
+{
+  mpegts_mux_t *mm = mpkt->mp_mux;
+  return mpegts_input_process(mi, mm, mpkt->mp_data, mpkt->mp_len,
+                              mpkt->mp_cc_restart);
 }
 
 /*
@@ -1752,7 +1761,7 @@ mpegts_input_thread ( void * p )
       tvh_mutex_lock(&mi->mi_output_lock);
     }
     tprofile_start(&tprofile, "input");
-    bytes += mpegts_input_process(mi, mp);
+    bytes += mpegts_input_process_packet(mi, mp);
     tprofile_finish(&tprofile);
     update_pids = mp->mp_mux && mp->mp_mux->mm_update_pids_flag;
     tvh_mutex_unlock(&mi->mi_output_lock);
