@@ -144,15 +144,23 @@ submux_packet ( mpegts_submux_t *sm, const uint8_t *data )
   return 1;
 }
 
-/* T2MI: the TS out of the PID */
+/* T2MI: the TS out of the PID; the PLPs seen go to the mux (its scan) */
 static void
 submux_t2mi_stream ( mpegts_submux_t *sm, const uint8_t *data, size_t len )
 {
+  dvb_mux_t *lm = (dvb_mux_t *)sm->sm_mmi->mmi_mux;
   t2mi_t *tm = sm->sm_t2mi;
+  int i;
 
   for ( ; len >= 188; data += 188, len -= 188)
     if (submux_packet(sm, data))
       t2mi_packet(tm, data);
+  if (tm->tm_plp_new) {
+    tm->tm_plp_new = 0;
+    for (i = 0; i < 8; i++)
+      __atomic_fetch_or(&lm->lm_t2mi_plps[i], tm->tm_plps[i], __ATOMIC_RELAXED);
+    __atomic_store_n(&lm->lm_t2mi_plp_cur, tm->tm_plp, __ATOMIC_RELAXED);
+  }
   if (sm->sm_out.sb_ptr > 0)
     mpegts_input_recv_packets(sm->sm_mmi, &sm->sm_out, MPEGTS_DATA_DECAPSULATED, NULL);
 }
@@ -257,7 +265,12 @@ submux_thread ( void *aux )
   return NULL;
 }
 
-/* T2MI: what came out of the PID */
+/* T2MI: what came out of the PID. A sub-mux the search made whose BBFrames
+ * came in good T2-MI packets, but none of them had a TS for it, and that
+ * has no services (a PLP without a TS) is disabled: it would be scanned
+ * again and again. Not without good BBFrame packets: no transponder or key,
+ * bad reception or a format not found - nothing tells that there is no TS,
+ * and a mux disabled for that would never be found again. */
 static void
 submux_t2mi_end ( mpegts_submux_t *sm )
 {
@@ -276,6 +289,14 @@ submux_t2mi_end ( mpegts_submux_t *sm )
            tm->tm_plp, n, tm->tm_packets, tm->tm_other, tm->tm_crc_errors,
            tm->tm_count_gaps, tm->tm_bt.bt_frames, tm->tm_bt.bt_errors,
            tm->tm_bt.bt_resyncs, tm->tm_cc_errors, tm->tm_pipe_resyncs);
+  if (!((dvb_mux_t *)mm)->lm_submux_found || tm->tm_in < 4 * T2MI_PROBE ||
+      tm->tm_packets <= tm->tm_other ||
+      tm->tm_out > 0 || !LIST_EMPTY(&mm->mm_services) || mm->mm_enabled != MM_ENABLE)
+    return;
+  tvhinfo(LS_MPEGTS, "%s - no TS in %"PRIu64" good T2-MI packets with BBFrames: disabled",
+          mm->mm_nicename, tm->tm_packets - tm->tm_other);
+  mm->mm_enabled = MM_DISABLE;
+  idnode_changed(&mm->mm_id);
 }
 
 static void
@@ -572,6 +593,8 @@ submux_input_start_mux ( mpegts_input_t *mi, mpegts_mux_instance_t *mmi, int wei
     t2mi_init(sm->sm_t2mi, lm->lm_t2mi_format,
               lm->lm_tuning.dmc_t2mi_plp_set ? lm->lm_tuning.dmc_t2mi_plp : T2MI_PLP_AUTO,
               submux_ts_out, sm);
+    memset(lm->lm_t2mi_plps, 0, sizeof(lm->lm_t2mi_plps));
+    lm->lm_t2mi_plp_cur = -1;
   }
   streaming_queue_init(&sm->sm_sq, 0, SUBMUX_QUEUE_SIZE);
   atomic_set(&sm->sm_run, 1);
