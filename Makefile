@@ -103,9 +103,9 @@ CFLAGS  += -I$(BUILDDIR)/dvbdab/build/include
 LDFLAGS += $(BUILDDIR)/dvbdab/build/lib/libdvbdab.a
 LDFLAGS += $(BUILDDIR)/dvbdab/build/lib/libpugixml.a
 ifeq ($(CONFIG_DVBDAB_TRANSCODE),yes)
-LDFLAGS += `$(PKG_CONFIG) --libs faad2`
+LDFLAGS += $(BUILDDIR)/dvbdab/build/lib/libfaad.a
 endif
-LDFLAGS += -lstdc++ -lz
+LDFLAGS += -lstdc++ -lz -lm
 endif
 
 # LIBAV ########################################################################
