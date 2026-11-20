@@ -648,7 +648,7 @@ typedef struct dvb_mux_conf
   uint8_t                     dmc_t2mi_plp;     /* T2MI: the PLP passed on ... */
   uint8_t                     dmc_t2mi_plp_set; /* ... if set, else the first one with a TS */
 
-  /* DAB-MPE specific (IP multicast) */
+  /* DAB-MPE/GSE specific (IP multicast) */
   uint32_t                    dmc_dab_ip;       /* Multicast IP (host byte order) */
   uint16_t                    dmc_dab_port;     /* UDP port */
 
