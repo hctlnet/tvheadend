@@ -7,10 +7,10 @@
  * Configuration → DVB Inputs → Muxes.
  *
  * The muxes as a tree: network → transponder → the sub-muxes carried in
- * it (the input streams of a multistream transponder, T2MI) → theirs,
- * and the services of each mux. A sub-mux in a PID names the service it
- * is carried in in the SID column (by name once the services of its
- * network are loaded).
+ * it (the input streams of a multistream transponder, T2MI, DAB
+ * ensembles) → theirs, and the services of each mux. A sub-mux in a PID
+ * names the service it is carried in (T2MI) or that announces it (DAB)
+ * in the SID column, by name once the services of its network are loaded.
  * A double click opens the editor of the mux, service or network.
  *
  * Rows are selected by a click (Ctrl/Cmd adds one, Shift a range) or
@@ -104,6 +104,7 @@ import { openPlay } from '@/utils/playUrl'
 import { formatMuxFrequency } from './muxFrequency'
 import {
   buildMuxTree,
+  addressLabel,
   caidList,
   containsMatch,
   countMuxes,
@@ -338,26 +339,36 @@ function serviceTitle(s: ServiceRow): string {
   return parts.join(' — ')
 }
 
-/* the service a sub-mux in a PID is carried in (a T2MI stream): known by
- * name once the services of its network are loaded */
+/* the service of a sub-mux in a PID in what carries it: the one it is
+ * carried in (a T2MI stream), or the one whose PMT announces it (DAB) */
+function serviceSidOf(row: MuxRow): number {
+  return row.carrier_sid || row.dab_pmt_sid || 0
+}
+
+/* that service: known by name once the services of its network are loaded */
 function carrierOf(row: MuxRow): ServiceRow | null {
-  if (!row.carrier_sid || !row.parent_mux || !row.network_uuid) return null
-  return services.value[row.network_uuid]?.get(row.parent_mux)?.find((x) => x.sid === row.carrier_sid) ?? null
+  const sid = serviceSidOf(row)
+  if (!sid || !row.parent_mux || !row.network_uuid) return null
+  return services.value[row.network_uuid]?.get(row.parent_mux)?.find((x) => x.sid === sid) ?? null
 }
 
 function carrierLabel(row: MuxRow): string {
-  if (!row.carrier_sid) return ''
+  const sid = serviceSidOf(row)
+  if (!sid) return ''
   const name = carrierOf(row)?.svcname
-  return name ? `${row.carrier_sid} · ${name}` : String(row.carrier_sid)
+  return name ? `${sid} · ${name}` : String(sid)
 }
 
 function carrierTitle(row: MuxRow): string | undefined {
-  if (!row.carrier_sid) return undefined
+  const sid = serviceSidOf(row)
+  if (!sid) return undefined
   const c = carrierOf(row)
-  if (!c) return t('Carrier service: SID {0}', row.carrier_sid)
+  if (!row.carrier_sid)
+    return c ? t('Announced by the service {0} (SID {1})', c.svcname ?? '', sid) : t('Announced by the service SID {0}', sid)
+  if (!c) return t('Carrier service: SID {0}', sid)
   return c.encrypted
-    ? t('Carrier service {0} (SID {1}), encrypted: {2}', c.svcname ?? '', row.carrier_sid, caidList(c.caid))
-    : t('Carrier service {0} (SID {1})', c.svcname ?? '', row.carrier_sid)
+    ? t('Carrier service {0} (SID {1}), encrypted: {2}', c.svcname ?? '', sid, caidList(c.caid))
+    : t('Carrier service {0} (SID {1})', c.svcname ?? '', sid)
 }
 
 /* a copy of the set with the key in it or not (the sets are replaced, so
@@ -1291,7 +1302,9 @@ function nameTitle(r: FlatRow): string | undefined {
   if (!row) return undefined
   /* the frequency in the unit of its mux class: Hz, or kHz (satellite) */
   const freq = r.wide ? formatMuxFrequency(row.frequency, row) : ''
-  return [row.name, freq, r.wide ? tuningLabel(row) : '', row.pnetwork_name].filter(Boolean).join(' — ')
+  return [row.name, freq, r.wide ? tuningLabel(row) : '', addressLabel(row), row.pnetwork_name]
+    .filter(Boolean)
+    .join(' — ')
 }
 
 /* Services and Channels: a mux with sub-muxes counts all levels below */
@@ -1529,9 +1542,14 @@ onMounted(loadNetworks)
             <template v-if="r.node">
               <template v-if="!r.wide">
                 <td>{{ muxTypeName(r.node.row.tstype) }}</td>
-                <!-- a sub-mux in a PID: the service it is carried in -->
+                <!-- a sub-mux in a PID: the service it is carried in or announced by -->
                 <td class="mux-tree__sid" :title="carrierTitle(r.node.row)">
-                  <Lock v-if="carrierOf(r.node.row)?.encrypted" class="mux-tree__lock" :size="12" :stroke-width="2" />
+                  <Lock
+                    v-if="r.node.row.carrier_sid && carrierOf(r.node.row)?.encrypted"
+                    class="mux-tree__lock"
+                    :size="12"
+                    :stroke-width="2"
+                  />
                   {{ carrierLabel(r.node.row) }}
                 </td>
               </template>
