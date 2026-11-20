@@ -141,6 +141,7 @@ struct mpegts_pcr {
 
 #define MPEGTS_DATA_CC_RESTART		(1<<0)
 #define MPEGTS_DATA_REMOVE_SCRAMBLED	(1<<1)
+#define MPEGTS_DATA_DECAPSULATED	(1<<2) /* the stream of a sub-mux: comes at its own pace */
 
 typedef int (*mpegts_table_callback_t)
   ( mpegts_table_t*, const uint8_t *buf, int len, int tableid );
@@ -672,7 +673,10 @@ struct mpegts_mux_instance
   mpegts_input_t *mmi_input;
 
   int             mmi_start_weight;
+  int             mmi_start_flags;
   int             mmi_tune_failed;
+
+  void           *mmi_submux;     /* the sub-mux input's state (mpegts_submux.c) */
 };
 
 struct mpegts_mux_sub

@@ -1222,8 +1222,10 @@ retry:
   off  = 0;
   tsb  = sb->sb_data;
   len  = sb->sb_ptr;
-  if (len < (MIN_TS_PKT * 188) && (flags & MPEGTS_DATA_CC_RESTART) == 0) {
-    /* For slow streams, check also against the clock */
+  if (len < (MIN_TS_PKT * 188) &&
+      (flags & (MPEGTS_DATA_CC_RESTART | MPEGTS_DATA_DECAPSULATED)) == 0) {
+    /* For slow streams, check also against the clock (not for a sub-mux: it
+     * shares the clock with the other sub-muxes of its input) */
     if (monocmpfastsec(mclk(), atomic_add_s64(&mi->mi_last_dispatch, 0)))
       return;
   }
