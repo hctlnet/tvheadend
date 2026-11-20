@@ -156,4 +156,10 @@ int        dvb_mux_transponder_by_streams ( mpegts_mux_t *mm );
 void       dvb_mux_transponder_result ( mpegts_mux_t *mm );
 void       dvb_mux_transponder_scan_streams ( mpegts_mux_t *mm, int weight, int flags );
 
+/* the input that runs the sub-muxes (mpegts_submux.c) */
+void mpegts_submux_init ( void );
+void mpegts_submux_done ( void );
+void mpegts_submux_create_instance ( mpegts_mux_t *mm );
+void mpegts_submux_client_weight ( service_t *t );
+
 #endif /* __TVH_MPEGTS_DVB_H__ */
