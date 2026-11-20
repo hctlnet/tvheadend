@@ -1723,6 +1723,7 @@ linuxdvb_frontend_monitor ( void *aux )
 #endif
       tvhdebug(LS_LINUXDVB, "%s - locked", buf);
       lfe->lfe_locked = 1;
+      int params_read = 0, blind = 0;
 #if ENABLE_LINUXDVB_NEUMO
       /* the MATYPE is valid a while after the lock */
       lfe->lfe_stream_info = mclk() + sec2mono(2);
@@ -1730,9 +1731,23 @@ linuxdvb_frontend_monitor ( void *aux )
       if (config.blindscan_update_mux &&
           config.blindscan_mode >= 1 &&
           mm->mm_scan_state == MM_SCAN_STATE_ACTIVE) {
-        linuxdvb_frontend_blindscan_update_mux(lfe, (dvb_mux_t *)mm);
+        params_read = linuxdvb_frontend_blindscan_update_mux(lfe, (dvb_mux_t *)mm);
       }
+      /* a blind tune (as linuxdvb_frontend_tune0() chooses it) locks the
+       * carrier it finds, whatever the parameters of the mux */
+      blind = lfe->lfe_neumo_supported && lfe->lfe_type == DVB_TYPE_S &&
+              (config.blindscan_mode == 2 ||
+               (config.blindscan_mode == 1 &&
+                (mm->mm_scan_state == MM_SCAN_STATE_ACTIVE ||
+                 mm->mm_scan_state == MM_SCAN_STATE_PEND ||
+                 mm->mm_scan_state == MM_SCAN_STATE_IPEND)));
 #endif
+      /* the present tuning parameters locked: the NIT keeps them (after a
+       * blind tune only those read from the demodulator) */
+      if (params_read)
+        dvb_mux_tuning_confirmed((dvb_mux_t *)mm, DVB_MUX_TUNING_READ);
+      else if (!blind)
+        dvb_mux_tuning_confirmed((dvb_mux_t *)mm, DVB_MUX_TUNING_LOCKED);
 
       /* Start input */
       tvh_pipe(O_NONBLOCK, &lfe->lfe_dvr_pipe);
