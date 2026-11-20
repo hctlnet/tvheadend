@@ -747,8 +747,10 @@ dvb_mux_t2mi_found ( mpegts_mux_t *mm, uint16_t pid, uint16_t sid )
 
   lock_assert(&global_lock);
 
-  /* in a transponder (sub-muxes in sub-muxes: not yet) */
-  if (mpegts_mux_is_submux(mm) || !idnode_is_instance(&mm->mm_id, &dvb_mux_class))
+  /* in a transponder or in an input stream on one; not in a multistream
+   * transponder: it has no TS of its own, its input streams find the
+   * T2-MI stream themselves */
+  if (!dvb_mux_pid_carrier_ok(mm))
     return;
   dmc = ((dvb_mux_t *)mm)->lm_tuning;
   dmc.dmc_fe_pid = pid;
@@ -761,6 +763,7 @@ dvb_mux_t2mi_found ( mpegts_mux_t *mm, uint16_t pid, uint16_t sid )
       continue;
     found = 1;
     lm = (dvb_mux_t *)sm;
+    dvb_mux_submux_found(lm, mm);
     if (lm->lm_carrier_sid != sid) {
       tvhinfo(LS_MPEGTS, "%s: carried in the service %d of %s", sm->mm_nicename,
               sid, mm->mm_nicename);
