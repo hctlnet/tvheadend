@@ -106,7 +106,7 @@ $(LIB_ROOT)/$(PUGIXML)/.tvh_build: \
 #
 # DAB+ transcoding (configure: dvbdab_transcode): with faad2 and the
 # libavcodec tvheadend is built with - the static FFmpeg, which pkg-config
-# finds through support/pkg-config.ffmpeg, or the installed one
+# finds through support/pkg-config.dvbdab, or the installed one
 #
 
 ifeq ($(CONFIG_DVBDAB_TRANSCODE),yes)
@@ -117,7 +117,7 @@ endif
 
 ifeq ($(CONFIG_DVBDAB_TRANSCODE)$(CONFIG_FFMPEG_STATIC),yesyes)
 DVBDAB_PKG_CONFIG := FFMPEG_PREFIX="$(BUILDDIR)/ffmpeg/build/ffmpeg"
-DVBDAB_CMAKE_PKG  := -DPKG_CONFIG_EXECUTABLE="$(ROOTDIR)/support/pkg-config.ffmpeg"
+DVBDAB_CMAKE_PKG  := -DPKG_CONFIG_EXECUTABLE="$(ROOTDIR)/support/pkg-config.dvbdab"
 endif
 
 $(LIB_ROOT)/$(LIBDVBDAB)/.tvh_download:

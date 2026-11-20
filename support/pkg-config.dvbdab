@@ -1,0 +1,24 @@
+#!/bin/sh
+#
+# pkg-config for the build of libdvbdab against the static FFmpeg
+# (Makefile.dvbdab, DAB+ transcoding): the libav* modules are those in
+# $FFMPEG_PREFIX with their paths there - their .pc files name the prefix
+# they were installed with (/ffmpeg). Every other module (pugixml, faad2)
+# as usual.
+#
+
+PKG_CONFIG=${PKG_CONFIG:-pkg-config}
+
+case " $* " in
+*" libav"*)
+  test -n "$FFMPEG_PREFIX" || exit 1
+  PKG_CONFIG_PATH= PKG_CONFIG_LIBDIR="$FFMPEG_PREFIX/lib/pkgconfig" \
+    exec $PKG_CONFIG \
+      --define-variable=prefix="$FFMPEG_PREFIX" \
+      --define-variable=includedir="$FFMPEG_PREFIX/include" \
+      --define-variable=libdir="$FFMPEG_PREFIX/lib" \
+      --static "$@"
+  ;;
+esac
+
+exec $PKG_CONFIG "$@"
