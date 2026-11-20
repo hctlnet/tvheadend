@@ -51,6 +51,11 @@ typedef struct dvb_mux
   char *lm_parent;
 
   /*
+   * T2MI: the format of the PID (t2mi.h; auto: detected)
+   */
+  int lm_t2mi_format;
+
+  /*
    * A multistream transponder (DVB-S2): it has the tuning, its input
    * streams are its sub-muxes (MM_TYPE_ISI)
    */
@@ -131,6 +136,9 @@ dvb_mux_t *dvb_mux_create0
   dvb_mux_create0(n, MPEGTS_ONID_NONE, MPEGTS_TSID_NONE, NULL, u, c)
 
 extern const idclass_t dvb_mux_class;
+
+/* the PID a sub-mux is carried in; 0 for a mux that is not in a PID */
+uint16_t   dvb_mux_stream_pid    ( mpegts_mux_t *mm );
 
 /* sub-muxes follow the tuning of the transponder they are carried in */
 dvb_mux_t *dvb_mux_submux_parent ( dvb_mux_t *sm );
