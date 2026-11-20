@@ -98,6 +98,19 @@ typedef struct dvb_mux
    * streams are its sub-muxes (MM_TYPE_ISI)
    */
   int lm_multistream;
+  /*
+   * DVB-S: the present tuning parameters locked at lm_tuning_ok
+   * (lm_tuning_ok_key: dvb_mux_tuning_key() of them then; lm_tuning_ok_src:
+   * DVB_MUX_TUNING_LOCKED, or DVB_MUX_TUNING_READ when they were read from
+   * the demodulator); scans with them failed from lm_tuning_failed_first
+   * to lm_tuning_failed (not saved). The NIT does not change trusted
+   * parameters (dvb_mux_tuning_trusted)
+   */
+  time_t   lm_tuning_ok;
+  uint32_t lm_tuning_ok_key;
+  int      lm_tuning_ok_src;
+  time_t   lm_tuning_failed_first;
+  time_t   lm_tuning_failed;
 
   /*
    * Frequencies for Mapping
@@ -106,6 +119,10 @@ typedef struct dvb_mux
   uint32_t mm_dvb_satip_dvbc_freq;
   uint32_t mm_dvb_satip_dvbs_freq;
 } dvb_mux_t;
+
+#define DVB_MUX_TUNING_LOCKED 1 ///< a tune with them locked
+#define DVB_MUX_TUNING_READ   2 ///< read from the demodulator at a lock
+
 
 /*
  * Network
@@ -207,6 +224,11 @@ void       dvb_mux_dab_pmt_pids  ( mpegts_mux_t *mm, const uint16_t *pids, int n
 void       dvb_mux_submux_link   ( dvb_mux_t *sm, const dvb_mux_t *parent );
 void       dvb_mux_submux_found  ( dvb_mux_t *sm, mpegts_mux_t *mm );
 int        dvb_mux_submux_sync   ( dvb_mux_t *sm );
+
+uint32_t   dvb_mux_tuning_key ( const dvb_mux_conf_t *dmc );
+void       dvb_mux_tuning_confirmed ( dvb_mux_t *lm, int src );
+void       dvb_mux_tuning_failed ( dvb_mux_t *lm );
+int        dvb_mux_tuning_trusted ( const dvb_mux_t *lm );
 void       dvb_network_link_multistream ( dvb_network_t *ln );
 /* one more input stream of the transponder of lm; NULL: *err says why, and
  * *services is not 0 when the caller has to confirm (force) that a mux with
