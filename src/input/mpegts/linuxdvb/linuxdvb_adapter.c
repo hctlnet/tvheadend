@@ -420,6 +420,8 @@ linuxdvb_adapter_add ( const char *path )
      * here need no write access. */
     int neumo_api = 0;
 #if ENABLE_LINUXDVB_NEUMO
+    int neumo_supported = 0;
+    uint8_t num_rf_inputs = 0;
     fd = linuxdvb_adapter_open_fe(fe_path, O_RDONLY);
     if (fd >= 0) {
       /* Neumo capability detection */
@@ -427,6 +429,12 @@ linuxdvb_adapter_add ( const char *path )
       memset(&ext_info, 0, sizeof(ext_info));
       if (ioctl(fd, FE_GET_EXTENDED_INFO, &ext_info) >= 0) {
         neumo_api = 1;
+        if (ext_info.supports_neumo && ext_info.num_rf_inputs > 1) {
+          neumo_supported = 1;
+          num_rf_inputs = ext_info.num_rf_inputs;
+          tvhinfo(LS_LINUXDVB, "%s Neumo multi-RF adapter: %d RF inputs",
+                  fe_path, num_rf_inputs);
+        }
       } else {
         /* a kernel without the DVB core of the Neumo driver: read-write,
          * as a build without its headers opens it */
@@ -445,6 +453,7 @@ linuxdvb_adapter_add ( const char *path )
     linuxdvb_get_systems(fd, neumo_api, &cmd);
 #endif
     r = ioctl(fd, FE_GET_INFO, &dfi);
+
     close(fd);
     if(r) {
       tvherror(LS_LINUXDVB, "unable to query %s", fe_path);
@@ -502,17 +511,28 @@ linuxdvb_adapter_add ( const char *path )
       if (fetypes[type5])
         continue;
 
-      /* Create */
-      linuxdvb_frontend_create(feconf, la, i, fe_path, dmx_path, dvr_path,
-                               type5, name);
+#if ENABLE_LINUXDVB_NEUMO
+      /* Create - for DVB-S with Neumo multi-RF, create virtual frontends */
+      if (type5 == DVB_TYPE_S && neumo_supported && num_rf_inputs > 1) {
+        int rf;
+        for (rf = 0; rf < num_rf_inputs; rf++) {
+          linuxdvb_frontend_create(feconf, la, i, fe_path, dmx_path, dvr_path,
+                                   type5, name, rf);
+        }
+      } else
+#endif
+      {
+        linuxdvb_frontend_create(feconf, la, i, fe_path, dmx_path, dvr_path,
+                                 type5, name, -1);
+      }
       fetypes[type5] = 1;
       fenum++;
     }
     if (fenum == 0)
       linuxdvb_frontend_create(feconf, la, i, fe_path, dmx_path, dvr_path,
-                               type, name);
+                               type, name, -1);
 #else
-    linuxdvb_frontend_create(feconf, la, i, fe_path, dmx_path, dvr_path, type, name);
+    linuxdvb_frontend_create(feconf, la, i, fe_path, dmx_path, dvr_path, type, name, -1);
 #endif
     tvh_mutex_unlock(&global_lock);
   }
