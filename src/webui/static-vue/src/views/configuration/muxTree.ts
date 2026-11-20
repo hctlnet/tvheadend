@@ -373,22 +373,28 @@ export function muxSearchText(node: MuxTreeNode): string {
 export interface TreeFilterResult {
   /* the nodes shown: a match, or a match below them */
   show: Set<string>
-  /* the nodes opened for a match below them */
+  /* the nodes opened for a match below them (sub-muxes or services) */
   open: Set<string>
   /* the nodes that match themselves: all below them stays browsable */
   self: Set<string>
 }
 
-/* which nodes a filter shows: `match` for the node itself */
-export function filterTree(nodes: MuxTreeNode[], match: (n: MuxTreeNode) => boolean): TreeFilterResult {
+/* which nodes a filter shows: `match` for the node itself, `servicesMatch`
+ * for a match among the services of its mux */
+export function filterTree(
+  nodes: MuxTreeNode[],
+  match: (n: MuxTreeNode) => boolean,
+  servicesMatch: (n: MuxTreeNode) => boolean = () => false,
+): TreeFilterResult {
   const res: TreeFilterResult = { show: new Set(), open: new Set(), self: new Set() }
   const walk = (n: MuxTreeNode): boolean => {
     let below = false
     for (const c of n.children) if (walk(c)) below = true
+    const svc = servicesMatch(n)
     const self = match(n)
     if (self) res.self.add(n.key)
-    if (below) res.open.add(n.key)
-    if (self || below) {
+    if (below || svc) res.open.add(n.key)
+    if (self || below || svc) {
       res.show.add(n.key)
       return true
     }

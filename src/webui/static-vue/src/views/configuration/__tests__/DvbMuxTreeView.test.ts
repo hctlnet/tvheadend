@@ -492,3 +492,48 @@ describe('DvbMuxTreeView filter', () => {
     expect(shows(w, '12226V')).toBe(true)
   })
 })
+
+/* n more transponders in network n1, one service each */
+function manyMuxes(s: FakeServer, n: number) {
+  for (let j = 0; j < n; j++) {
+    s.muxes.push({
+      uuid: `x${j}`, name: `${10700 + j}V`, network: 'Astra', network_uuid: 'n1', tstype: 0,
+      num_svc: 1, num_chn: 0, scan_state: 0, scan_result: 1, enabled: 1,
+    })
+    s.services.push({ uuid: `y${j}`, svcname: `Radio ${j}`, sid: j + 1, network: 'Astra', multiplex_uuid: `x${j}` })
+  }
+  s.networks[0].num_mux = n + 1
+}
+
+async function searchServiceNames(w: Wrapper, text: string) {
+  await w.find('label.mux-tree__check input').setValue(true)
+  await typeFilter(w, text)
+}
+
+describe('DvbMuxTreeView search in the service names', () => {
+  it('searches the service names on the server, once, and shows the first matches', async () => {
+    const s = server()
+    manyMuxes(s, 600)
+    const w = await mountTree(s)
+    await searchServiceNames(w, 'radio')
+    const search = calls('mpegts/service/grid').filter((c) => JSON.stringify(c.filter).includes('svcname'))
+    expect(search).toHaveLength(1)
+    expect(search[0].filter).toEqual([{ type: 'string', field: 'svcname', value: 'radio' }])
+    expect(search[0].limit).toBe(500)
+    /* no services of whole networks for it */
+    expect(calls('mpegts/service/grid')).toHaveLength(1)
+    expect(w.find('.mux-tree__hits').text()).toContain('500')
+    expect(w.find('.mux-tree__hits').text()).toContain('600')
+    expect(shows(w, 'Radio 0')).toBe(true)
+  })
+
+  it('escapes the search text for the server', async () => {
+    const s = server()
+    s.services.push({ uuid: 's9', svcname: 'ORF 2 (W)', sid: 9, network: 'Astra', multiplex_uuid: 'm1' })
+    s.muxes[0].num_svc = 2
+    const w = await mountTree(s)
+    await searchServiceNames(w, '2 (w')
+    expect(shows(w, 'ORF 2 (W)')).toBe(true)
+    expect(shows(w, 'Das Erste HD')).toBe(false)
+  })
+})
