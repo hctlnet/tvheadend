@@ -774,6 +774,7 @@ linuxdvb_frontend_start_mux
 
   assert(lfe->lfe_in_setup == 0);
 
+
   lfe->lfe_refcount++;
   lfe->lfe_in_setup = 1;
   lfe->lfe_ioctls   = 0;
@@ -1136,7 +1137,7 @@ linuxdvb_frontend_monitor ( void *aux )
 
   gotprop = 0;
   if(ioctl_check(lfe, 0) && !lfe->lfe_old_status &&
-     !ioctl(lfe->lfe_fe_fd, FE_GET_PROPERTY, &dtv_prop)) {
+     !linuxdvb_fe_get_property(lfe->lfe_fe_fd, lfe->lfe_neumo_detected, &dtv_prop)) {
     for (e = 0; e < dtv_prop.num; e++)
       if (fe_properties[e].u.st.len > 0) {
         gotprop = 1;
@@ -1647,7 +1648,7 @@ linuxdvb_frontend_clear
     .num = 1,
     .props = clear_p
   };
-  if ((ioctl(lfe->lfe_fe_fd, FE_SET_PROPERTY, &clear_cmdseq)) != 0) {
+  if ((linuxdvb_fe_set_property(lfe->lfe_fe_fd, lfe->lfe_neumo_detected, &clear_cmdseq)) != 0) {
     tvherror(LS_LINUXDVB, "%s - DTV_CLEAR failed [e=%s]", buf1, strerror(errno));
     return -1;
   }
@@ -1664,7 +1665,7 @@ linuxdvb_frontend_clear
     delsys_cmdseq.props = &delsys_p;
     delsys_p.cmd = DTV_DELIVERY_SYSTEM;
     delsys_p.u.data = TR(delsys, delsys_tbl, SYS_UNDEFINED);
-    if ((ioctl(lfe->lfe_fe_fd, FE_SET_PROPERTY, &delsys_cmdseq)) != 0) {
+    if ((linuxdvb_fe_set_property(lfe->lfe_fe_fd, lfe->lfe_neumo_detected, &delsys_cmdseq)) != 0) {
       tvherror(LS_LINUXDVB, "%s - DTV_DELIVERY_SYSTEM failed [e=%s]", buf1, strerror(errno));
       return -1;
     }
@@ -2059,7 +2060,7 @@ linuxdvb_frontend_tune0
     for (i = 0; i < cmdseq.num; i++)
       tvhtrace(LS_LINUXDVB, "S2CMD %02u => %u", cmds[i].cmd, cmds[i].u.data);
   }
-  r = ioctl(lfe->lfe_fe_fd, FE_SET_PROPERTY, &cmdseq);
+  r = linuxdvb_fe_set_property(lfe->lfe_fe_fd, lfe->lfe_neumo_detected, &cmdseq);
 
   /* v3 tuning */
 #else
@@ -2292,6 +2293,34 @@ linuxdvb_frontend_create
   lfe->lfe_fe_path  = strdup(fe_path);
   lfe->lfe_dmx_path = strdup(dmx_path);
   lfe->lfe_dvr_path = strdup(dvr_path);
+
+#if ENABLE_LINUXDVB_NEUMO
+  /* Neumo capability detection via FE_GET_EXTENDED_INFO */
+  lfe->lfe_neumo_detected = 0;
+  lfe->lfe_neumo_supported = 0;
+  lfe->lfe_num_rf_inputs = 0;
+  lfe->lfe_default_rf_input = -1;
+  fd = tvh_open(fe_path, O_RDONLY | O_NONBLOCK, 0);
+  if (fd >= 0) {
+    struct dvb_frontend_extended_info ext_info;
+    memset(&ext_info, 0, sizeof(ext_info));
+    if (ioctl(fd, FE_GET_EXTENDED_INFO, &ext_info) >= 0) {
+      lfe->lfe_neumo_detected = 1;
+      if (ext_info.supports_neumo) {
+        lfe->lfe_neumo_supported = 1;
+        lfe->lfe_num_rf_inputs = ext_info.num_rf_inputs;
+        lfe->lfe_default_rf_input = ext_info.default_rf_input;
+        tvhinfo(LS_LINUXDVB, "%s Neumo driver detected: %d RF inputs, default=%d",
+                fe_path, ext_info.num_rf_inputs, ext_info.default_rf_input);
+      } else {
+        tvhtrace(LS_LINUXDVB, "%s - FE_GET_EXTENDED_INFO: supports_neumo=0", fe_path);
+      }
+    } else {
+      tvhtrace(LS_LINUXDVB, "%s - FE_GET_EXTENDED_INFO not supported", fe_path);
+    }
+    close(fd);
+  }
+#endif
 
   /* Input callbacks */
   lfe->ti_wizard_get          = linuxdvb_frontend_wizard_get;
