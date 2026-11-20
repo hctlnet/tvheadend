@@ -446,7 +446,7 @@ enum mpegts_mux_type
 /* a DAB ensemble converted to a TS (libdvbdab) */
 #define mpegts_mux_is_dab(mm) \
   ((mm)->mm_type == MM_TYPE_DAB_MPE || (mm)->mm_type == MM_TYPE_DAB_ETI || \
-   (mm)->mm_type == MM_TYPE_DAB_TSNI)
+   (mm)->mm_type == MM_TYPE_DAB_GSE || (mm)->mm_type == MM_TYPE_DAB_TSNI)
 
 enum mpegts_mux_epg_flag
 {
@@ -1058,7 +1058,7 @@ int mpegts_mux_instance_weight ( mpegts_mux_instance_t *mmi );
 int mpegts_mux_set_network_name ( mpegts_mux_t *mm, const char *name );
 int mpegts_mux_set_tsid ( mpegts_mux_t *mm, uint32_t tsid, int force );
 /* the mux has a TS of its own (not: a multistream transponder, whose input
- * streams are its sub-muxes) */
+ * streams are its sub-muxes; a GSE stream, whose DAB ensembles are) */
 int mpegts_mux_has_own_ts ( mpegts_mux_t *mm );
 int mpegts_mux_set_onid ( mpegts_mux_t *mm, uint32_t onid );
 int mpegts_mux_set_crid_authority ( mpegts_mux_t *mm, const char *defauth );
@@ -1323,6 +1323,7 @@ static inline void mpegts_isi_probe_start(mpegts_mux_t *mm) { }
 static inline int  mpegts_isi_probe_complete(mpegts_mux_t *mm, int evaluate) { return 0; }
 static inline int  mpegts_isi_probe_is_done(mpegts_mux_t *mm) { return 1; }
 #endif
+
 
 #endif /* __TVH_MPEGTS_H__ */
 

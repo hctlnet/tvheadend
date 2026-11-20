@@ -301,7 +301,7 @@ mpegts_network_scan_mux_done0
   int scan_weight = mm->mm_scan_weight;   /* of the scan that ends */
 #endif
   mpegts_mux_scan_state_t state = mm->mm_scan_state;
-  int dab_found = 0;
+  int dab_found = 0, type0 = mm->mm_type;
 
   /* The DAB data come slower than the tables of a scan: a scan that ended
    * (not a cancelled one) waits for the probe, for a while at most */
@@ -319,12 +319,13 @@ mpegts_network_scan_mux_done0
   /* a multistream transponder has no tables: its result are its input
    * streams; the services it got from the stream the demodulator chose go */
   if (!mpegts_mux_has_own_ts(mm) && result != MM_SCAN_NONE) {
+    const char *what = type0 == MM_TYPE_GSE ? "DAB ensemble" : "input stream";
     result = dab_found > 0 ? MM_SCAN_OK : MM_SCAN_FAIL;
     if (dab_found > 0)
-      tvhinfo(LS_MPEGTS, "%s - scan complete, %d input stream%s", mm->mm_nicename,
-              dab_found, dab_found == 1 ? "" : "s");
+      tvhinfo(LS_MPEGTS, "%s - scan complete, %d %s%s", mm->mm_nicename,
+              dab_found, what, dab_found == 1 ? "" : "s");
     else
-      tvhwarn(LS_MPEGTS, "%s - scan found no input streams", mm->mm_nicename);
+      tvhwarn(LS_MPEGTS, "%s - scan found no %ss", mm->mm_nicename, what);
 #if ENABLE_MPEGTS_DVB
     dvb_mux_transponder_drop_services((dvb_mux_t *)mm);
 #endif
@@ -406,6 +407,12 @@ mpegts_network_scan_mux_done0
   /* Re-enable? */
   if (weight > 0)
     mpegts_network_scan_queue_add(mm, weight, mm->mm_scan_flags, 10);
+  /* the GSE-DAB probe made this GSE mux the first ensemble it found: this
+   * scan read the GSE stream, the ensemble's services need a scan of its
+   * own (not when the scan was cancelled - the mux may be going away) */
+  else if (result != MM_SCAN_NONE && mm->mm_type != type0)
+    mpegts_network_scan_queue_add(mm, SUBSCRIPTION_PRIO_SCAN_INIT,
+                                  SUBSCRIPTION_INITSCAN, 10);
 
 #if ENABLE_MPEGTS_DVB
   /* a T2-MI stream with several PLPs: a sub-mux for each (of a scan that
@@ -487,6 +494,7 @@ mpegts_network_scan_mux_active ( mpegts_mux_t *mm )
 
   /* Start ISI probe (no-op if not DVB-S2 with Neumo driver) */
   mpegts_isi_probe_start(mm);
+
 }
 
 /* Mux has been reactivated */
