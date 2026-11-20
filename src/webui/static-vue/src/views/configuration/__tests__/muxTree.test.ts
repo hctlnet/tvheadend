@@ -19,6 +19,8 @@ import {
   scanPending,
   scanQueued,
   scanResultName,
+  MUX_TYPE_DAB_GSE,
+  MUX_TYPE_GSE,
   MUX_TYPE_ISI,
   MUX_TYPE_T2MI,
   shortName,
@@ -82,6 +84,30 @@ describe('buildMuxTree', () => {
     ])
     expect(labels(tree[0].children)).toEqual(['ISI 3', 'ISI 14', 'ISI 20'])
     expect(tree[0].children.map((n) => n.isi)).toEqual([3, 14, 20])
+  })
+
+  it('puts the DAB ensembles of a GSE stream below it, named without transponder and ISI', () => {
+    /* the ensembles name the transponder as their parent, and their ISI */
+    const rows: MuxRow[] = [
+      { uuid: 't', name: '10717V', multistream: true },
+      { uuid: 'g', name: '10717V ISI 171', parent_mux: 't', tstype: MUX_TYPE_GSE, stream_id: 171 },
+      { uuid: 'r', name: '10717V ISI 171 Riks', parent_mux: 't', tstype: MUX_TYPE_DAB_GSE, stream_id: 171 },
+      { uuid: 'n', name: '10717V ISI 171 NRK Reg1', parent_mux: 't', tstype: MUX_TYPE_DAB_GSE, stream_id: 171 },
+      { uuid: 'i', name: '10717V ISI 4', parent_mux: 't', tstype: MUX_TYPE_ISI, stream_id: 4 },
+    ]
+    const tree = buildMuxTree(rows)
+    expect(labels(tree[0].children)).toEqual(['ISI 4', 'ISI 171'])
+    expect(labels(tree[0].children[1].children)).toEqual(['NRK Reg1', 'Riks'])
+    expect(subMuxScan(tree[0]).total).toBe(4)
+  })
+
+  it('leaves a DAB ensemble in GSE below its transponder when that has no sub-mux of the stream', () => {
+    const rows: MuxRow[] = [
+      { uuid: 't', name: '10717V', multistream: true },
+      { uuid: 'p', name: '10717V ISI 172 Riks', parent_mux: 't', tstype: MUX_TYPE_DAB_GSE, stream_id: 172 },
+    ]
+    const tree = buildMuxTree(rows)
+    expect(labels(tree[0].children)).toEqual(['ISI 172 Riks'])
   })
 
   it('keeps a sub-mux whose transponder is missing at the top, marked', () => {
@@ -280,6 +306,8 @@ describe('labels in the language of the UI', () => {
     expect(muxTypeName(2)).toBe('DAB-MPE')
     expect(muxTypeName(3)).toBe('DAB-ETI')
     expect(muxTypeName(6)).toBe('DAB-TSNI')
+    expect(muxTypeName(MUX_TYPE_GSE)).toBe('GSE')
+    expect(muxTypeName(MUX_TYPE_DAB_GSE)).toBe('DAB-GSE')
     expect(muxTypeName(0)).toBe('TS')
     expect(muxTypeName(undefined)).toBe('TS')
     expect(serviceTypeName(0x02)).toBe('Hörfunk')

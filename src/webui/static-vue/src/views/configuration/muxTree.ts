@@ -7,7 +7,10 @@
  * T2MI, DAB ensembles) and theirs.
  *
  * A sub-mux names its transponder in `parent_mux` (uuid, DVB muxes
- * only); the depth is not limited here.
+ * only); the depth is not limited here. A DAB ensemble in a GSE input
+ * stream names the transponder too: it goes below the GSE stream of
+ * its ISI (`stream_id`) when the transponder has that sub-mux, so the
+ * tree shows transponder → input stream → ensemble as it is on air.
  *
  * Pure functions, no Vue: the view (DvbMuxTreeView.vue) renders the
  * nodes and keeps the expanded state. The labels go through the static
@@ -80,6 +83,8 @@ export const MUX_TYPE_TS = 0
 export const MUX_TYPE_T2MI = 1
 export const MUX_TYPE_DAB_MPE = 2
 export const MUX_TYPE_DAB_ETI = 3
+export const MUX_TYPE_DAB_GSE = 4
+export const MUX_TYPE_GSE = 5
 export const MUX_TYPE_DAB_TSNI = 6
 export const MUX_TYPE_ISI = 7
 
@@ -91,6 +96,8 @@ const TYPE_LABELS: Record<number, () => string> = {
   [MUX_TYPE_DAB_MPE]: () => t('DAB-MPE'),
   [MUX_TYPE_DAB_ETI]: () => t('DAB-ETI'),
   [MUX_TYPE_DAB_TSNI]: () => t('DAB-TSNI'),
+  [MUX_TYPE_DAB_GSE]: () => t('DAB-GSE'),
+  [MUX_TYPE_GSE]: () => t('GSE'),
 }
 
 export function muxTypeName(type: number | undefined): string {
@@ -109,7 +116,7 @@ export function containsMatch(text: string): string {
   return text.replace(/[.[\]()*+?{}|^$\\]/g, '\\$&')
 }
 
-/* the IP address and port of a DAB ensemble in MPE, else '' */
+/* the IP address and port of a DAB ensemble in MPE or GSE, else '' */
 export function addressLabel(row: MuxRow): string {
   if (!row.dab_ip) return ''
   return row.dab_port ? `${row.dab_ip}:${row.dab_port}` : row.dab_ip
@@ -278,7 +285,7 @@ export function scanOk(row: MuxRow): boolean {
 
 /* an input stream of its own */
 function isInputStream(row: MuxRow): boolean {
-  return row.tstype === MUX_TYPE_ISI
+  return row.tstype === MUX_TYPE_ISI || row.tstype === MUX_TYPE_GSE
 }
 
 function hasIsi(row: MuxRow): boolean {
@@ -343,14 +350,35 @@ export function buildMuxTree(rows: MuxRow[]): MuxTreeNode[] {
 
   function build(row: MuxRow, parentName: string | undefined): MuxTreeNode {
     const name = row.name ?? row.uuid
-    return {
+    const node: MuxTreeNode = {
       key: row.uuid,
       row,
       label: shortName(name, parentName),
       orphan: !!row.parent_mux && !byUuid.has(row.parent_mux),
       isi: hasIsi(row) ? (row.stream_id as number) : null,
-      children: (children.get(row.uuid) ?? []).map((c) => build(c, name)),
+      children: [],
     }
+    const kids = (children.get(row.uuid) ?? []).map((c) => build(c, name))
+    if (!row.multistream) {
+      node.children = kids
+      return node
+    }
+    /* multistream: a sub-mux with an ISI that is no input stream (DAB in
+     * GSE) goes below the input stream of its ISI, named without it:
+     * "10717V ISI 171 Riks" → "Riks" */
+    const streams = new Map<number, MuxTreeNode>()
+    for (const k of kids)
+      if (isInputStream(k.row) && k.isi !== null && !streams.has(k.isi)) streams.set(k.isi, k)
+    for (const k of kids) {
+      const s = isInputStream(k.row) || k.isi === null ? undefined : streams.get(k.isi)
+      if (!s) {
+        node.children.push(k)
+        continue
+      }
+      k.label = shortName(k.row.name ?? k.row.uuid, s.row.name)
+      s.children.push(k)
+    }
+    return node
   }
 
   const tree = top.map((r) => build(r, undefined))
