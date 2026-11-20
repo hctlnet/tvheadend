@@ -47,6 +47,8 @@ export interface MuxRow {
   pls_mode?: string
   pls_code?: number
   bandwidth?: string
+  /* DVB-S2: "0xF2: TS, single stream, CCM, rolloff 0.20" */
+  matype?: string
   scan_result?: number
   scan_state?: number
   num_svc?: number
@@ -67,7 +69,7 @@ export const MUX_FIELDS = [
   'dab_ip', 'dab_port', 'dab_pmt_sid',
   'pnetwork_name', 'delsys', 'modulation', 'constellation', 'fec', 'symbolrate', 'rolloff', 'pilot',
   'pls_mode', 'pls_code', 'bandwidth', 'scan_result', 'scan_state', 'num_svc', 'num_chn', 'enabled',
-  'frequency', 'polarisation', 'gse_content',
+  'frequency', 'polarisation', 'gse_content', 'matype',
 ].join(',')
 
 export interface MuxTreeNode {
