@@ -293,7 +293,9 @@ const idclass_t dvb_mux_class =
       .id       = "t2mi_plp",
       .name     = N_("T2MI PLP"),
       .desc     = N_("The PLP whose TS the mux passes on, -1: the first "
-                     "one with a TS."),
+                     "one with a TS. When a scan finds several, the mux "
+                     "keeps its PLP and each other one gets a mux of "
+                     "its own."),
       .get      = dvb_mux_class_t2mi_plp_get,
       .set      = dvb_mux_class_t2mi_plp_set,
       .get_opts = dvb_mux_class_t2mi_opts,
