@@ -173,6 +173,7 @@ struct linuxdvb_frontend
   uint8_t                   lfe_num_rf_inputs;      /* Number of RF inputs available */
   int8_t                    lfe_default_rf_input;   /* Default RF input */
   int64_t                   lfe_card_id;            /* card_mac_address: the same for the demods of a card */
+  int64_t                   lfe_stream_info;        /* mclk() of the next MATYPE/MODCOD read */
 
   /*
    * Virtual frontend RF input binding (for multi-RF-input adapters)
