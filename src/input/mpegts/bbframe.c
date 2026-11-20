@@ -226,3 +226,15 @@ bbframe_split_ts ( bbframe_split_t *bs, const uint8_t *pkt,
     bbframe_frame_ts(&bs->bs_ts, frame, len, cb, opaque);
 }
 
+void
+bbframe_split_frames ( bbframe_split_t *bs, const uint8_t *pkt,
+                       bbframe_frame_cb_t cb, void *opaque )
+{
+  const uint8_t *frame;
+  size_t len;
+
+  if ((frame = bbframe_split_add(bs, pkt, &len)) != NULL) {
+    bs->bs_ts.bt_frames++;
+    cb(opaque, frame, len, bs->bs_cur);
+  }
+}
