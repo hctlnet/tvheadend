@@ -23,6 +23,22 @@ export interface MuxRow {
   multistream?: boolean
   tstype?: number
   stream_id?: number
+  pnetwork_name?: string | null
+  delsys?: string
+  modulation?: string
+  constellation?: string
+  fec?: string
+  symbolrate?: number
+  rolloff?: string
+  pilot?: string
+  pls_mode?: string
+  pls_code?: number
+  bandwidth?: string
+  scan_result?: number
+  scan_state?: number
+  num_svc?: number
+  num_chn?: number
+  enabled?: number
   [key: string]: unknown
 }
 
@@ -30,6 +46,8 @@ export interface MuxRow {
  * the server sends only these (and the uuid) */
 export const MUX_FIELDS = [
   'name', 'network_uuid', 'parent_mux', 'multistream', 'tstype', 'stream_id',
+  'pnetwork_name', 'delsys', 'modulation', 'constellation', 'fec', 'symbolrate', 'rolloff', 'pilot',
+  'pls_mode', 'pls_code', 'bandwidth', 'scan_result', 'scan_state', 'num_svc', 'num_chn', 'enabled',
 ].join(',')
 
 export interface MuxTreeNode {
@@ -66,6 +84,85 @@ export function exactMatch(text: string): string {
 /* ... and the one that finds the text anywhere */
 export function containsMatch(text: string): string {
   return text.replace(/[.[\]()*+?{}|^$\\]/g, '\\$&')
+}
+
+/* mm_scan_state (MM_SCAN_STATE_* in src/input/mpegts.h): idle, queued
+ * for a scan, in the idle scan queue of the network (the muxes rotate
+ * there with "Idle scan muxes"), scanning */
+export const SCAN_STATE_IDLE = 0
+export const SCAN_STATE_PEND = 1
+export const SCAN_STATE_IPEND = 2
+export const SCAN_STATE_ACTIVE = 3
+
+/* a scan of the mux is queued or runs. Not so in the idle queue: a scan
+ * asked for there queues the mux before the idle ones
+ * (`mpegts_mux_class_scan_state_set`) */
+export function scanQueued(row: MuxRow): boolean {
+  const st = row.scan_state ?? SCAN_STATE_IDLE
+  return st === SCAN_STATE_PEND || st === SCAN_STATE_ACTIVE
+}
+
+/* "PSK/8" → "8PSK", "QAM/256" → "256QAM", others as they are */
+function modulationName(m: string | undefined): string {
+  if (!m || m === 'AUTO' || m === 'NONE') return ''
+  const x = /^(PSK|QAM|APSK)\/(\d+)$/.exec(m)
+  return x ? `${x[2]}${x[1]}` : m
+}
+
+/* rolloff "35" → "0.35", "5" → "0.05" */
+function rolloffName(r: string | undefined): string {
+  if (!r || r === 'NONE') return ''
+  if (r === 'AUTO') return 'auto'
+  const n = Number(r)
+  return Number.isFinite(n) ? (n / 100).toFixed(2) : r
+}
+
+/* the tuning of a transponder in one line: delivery system, modulation
+ * and FEC, symbol rate (kSym/s), PLS (when scrambled), rolloff, pilot -
+ * the PLS before the two that are mostly auto: a cut line keeps it */
+export function tuningLabel(row: MuxRow): string {
+  const parts: string[] = []
+  if (row.delsys) parts.push(row.delsys)
+  const mod = modulationName(row.modulation ?? row.constellation)
+  const fec = row.fec && row.fec !== 'AUTO' && row.fec !== 'NONE' ? row.fec : ''
+  if (mod || fec) parts.push([mod, fec].filter(Boolean).join(' '))
+  if (row.bandwidth && row.bandwidth !== 'AUTO') parts.push(row.bandwidth)
+  if (row.symbolrate) parts.push(`SR ${Math.round(row.symbolrate / 1000)}`)
+  const s2 = row.delsys === 'DVB-S2' || row.delsys === 'ISDB-S'
+  /* Root 1 and Gold 0 are the same sequence: not scrambled */
+  const mode = row.pls_mode
+  const code = row.pls_code
+  if (s2 && mode && code !== undefined && !(mode === 'ROOT' && code === 1) && !(mode === 'GOLD' && code === 0))
+    parts.push(`PLS ${mode.charAt(0) + mode.slice(1).toLowerCase()} ${code}`)
+  const ro = s2 ? rolloffName(row.rolloff) : ''
+  if (ro) parts.push(`RO ${ro}`)
+  if (s2 && row.pilot) parts.push(`Pilot ${row.pilot.toLowerCase()}`)
+  return parts.join(' · ')
+}
+
+/* mm_scan_result (MM_SCAN_* in src/input/mpegts.h), named as in
+ * scan_result_tab in src/input/mpegts/mpegts_mux.c */
+export const SCAN_RESULT_NONE = 0
+export const SCAN_RESULT_OK = 1
+export const SCAN_RESULT_FAIL = 2
+export const SCAN_RESULT_PARTIAL = 3
+export const SCAN_RESULT_IGNORE = 4
+
+const SCAN_RESULTS: Record<number, () => string> = {
+  [SCAN_RESULT_NONE]: () => '',
+  [SCAN_RESULT_OK]: () => t('OK'),
+  [SCAN_RESULT_FAIL]: () => t('FAIL'),
+  [SCAN_RESULT_PARTIAL]: () => t('OK (partial)'),
+  [SCAN_RESULT_IGNORE]: () => t('IGNORE'),
+}
+
+export function scanResultName(result: number | undefined): string {
+  return SCAN_RESULTS[result ?? SCAN_RESULT_NONE]?.() ?? String(result)
+}
+
+/* scanned with success: OK, or OK in part (MM_SCAN_CHECK_OK) */
+export function scanOk(row: MuxRow): boolean {
+  return row.scan_result === SCAN_RESULT_OK || row.scan_result === SCAN_RESULT_PARTIAL
 }
 
 /* an input stream of its own */
@@ -148,6 +245,33 @@ export function buildMuxTree(rows: MuxRow[]): MuxTreeNode[] {
   const tree = top.map((r) => build(r, undefined))
   sortTree(tree)
   return tree
+}
+
+/* the sub-muxes below a node (all levels) and how many of them were
+ * scanned with success (OK or partial) */
+export function subMuxScan(node: MuxTreeNode): { ok: number; total: number } {
+  let ok = 0
+  let total = 0
+  for (const c of node.children) {
+    total++
+    if (scanOk(c.row)) ok++
+    const sub = subMuxScan(c)
+    ok += sub.ok
+    total += sub.total
+  }
+  return { ok, total }
+}
+
+/* the services and channels of a node and of all sub-muxes below it */
+export function subtreeCounts(node: MuxTreeNode): { svc: number; chn: number } {
+  let svc = node.row.num_svc ?? 0
+  let chn = node.row.num_chn ?? 0
+  for (const c of node.children) {
+    const sub = subtreeCounts(c)
+    svc += sub.svc
+    chn += sub.chn
+  }
+  return { svc, chn }
 }
 
 /* every node key with children: for "expand all" */

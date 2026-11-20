@@ -223,6 +223,49 @@ describe('DvbMuxTreeView sub-muxes', () => {
   })
 })
 
+describe('DvbMuxTreeView columns', () => {
+  it('shows the tuning and the provider network of a transponder in its row', async () => {
+    const w = await mountTree()
+    await expand(w, 'Astra (1)')
+    const row = rowOf(w, '11494H')
+    expect(row.find('.mux-tree__tuning').text()).toBe('DVB-S2 · 8PSK 2/3 · SR 22000')
+    expect(row.find('.mux-tree__provider').text()).toBe('ASTRA 1')
+    expect(row.text()).toContain('OK')
+    expect(String(calls('mpegts/mux/grid')[0].list).split(',')).toEqual(
+      expect.arrayContaining(['delsys', 'symbolrate', 'scan_state', 'scan_result', 'num_svc', 'enabled']),
+    )
+  })
+
+  it('adds the services and channels of the input streams to those of their transponder', async () => {
+    const s = server()
+    multistream(s)
+    const w = await mountTree(s)
+    await expand(w, 'Astra (4)')
+    const cells = rowOf(w, '12226V').findAll('td.mux-tree__num')
+    expect(cells.map((c) => c.text())).toEqual(['31', '3'])
+    expect(cells[0].attributes('title')).toBe('0 own + 31 in sub-muxes')
+    /* one of the two input streams scanned with success */
+    expect(rowOf(w, '12226V').text()).toContain('1/2')
+    expect(rowOf(w, 'ISI 3').text()).toContain('FAIL')
+  })
+
+  it('says what is queued, scanning, in the idle scan queue or not enabled', async () => {
+    const s = server()
+    multistream(s)
+    s.muxes[0].scan_state = 2
+    s.muxes[2].scan_state = 1
+    s.muxes[3].scan_state = 3
+    s.muxes[4].enabled = 0
+    const w = await mountTree(s)
+    await expand(w, 'Astra (4)')
+    expect(rowOf(w, '11494H').text()).toContain('idle queue')
+    expect(rowOf(w, '12226V').text()).toContain('queued')
+    expect(rowOf(w, 'ISI 14').text()).toContain('scanning…')
+    expect(rowOf(w, 'ISI 3').text()).toContain('disabled')
+    expect(rowOf(w, 'ISI 3').classes()).toContain('mux-tree__row--off')
+  })
+})
+
 /* the answers of the mux grid wait until released, one by one */
 function holdMuxGrid(s: FakeServer) {
   const held: Array<() => void> = []
