@@ -23,7 +23,8 @@
 
 # ############################################################################
 # libdvbdab (DAB/DAB+ in DVB streams) as a static library, with the XML
-# parser it needs (pugixml). Both are C++ and built with cmake.
+# parser it needs (pugixml) and, for DAB+ transcoding, the AAC decoder
+# (faad2). All built with cmake; libdvbdab and pugixml are C++.
 # ############################################################################
 
 DIR :=  $(dir $(lastword $(MAKEFILE_LIST)))
@@ -41,6 +42,12 @@ PUGIXML         = pugixml-$(PUGIXML_VER)
 PUGIXML_TB      = $(PUGIXML).tar.gz
 PUGIXML_URL     = https://github.com/zeux/pugixml/releases/download/v$(PUGIXML_VER)/$(PUGIXML_TB)
 PUGIXML_SHA1    = 906f1038f0687ce6466687eaa9b457af3c7e3382
+
+FAAD2_VER       = 2.11.2
+FAAD2           = faad2-$(FAAD2_VER)
+FAAD2_TB        = $(FAAD2).tar.gz
+FAAD2_URL       = https://github.com/knik0/faad2/archive/refs/tags/$(FAAD2_VER).tar.gz
+FAAD2_SHA1      = 33d160135a02a6dcf66948d678435552512c1a9b
 
 LIBDVBDAB_VER   = 2.8.0
 LIBDVBDAB       = libdvbdab-$(LIBDVBDAB_VER)
@@ -63,6 +70,13 @@ LIB_FILES      := \
 			$(EPREFIX)/lib/libpugixml.a \
 			$(EPREFIX)/lib/libdvbdab.a \
 			$(EPREFIX)/include/dvbdab/*.h
+
+ifeq ($(CONFIG_DVBDAB_TRANSCODE),yes)
+LIB_FILES      += \
+			$(LIB_ROOT)/$(FAAD2)/.tvh_download \
+			$(LIB_ROOT)/$(FAAD2)/.tvh_build \
+			$(EPREFIX)/lib/libfaad.a
+endif
 
 include $(DIR)/Makefile.static
 
@@ -102,15 +116,33 @@ $(LIB_ROOT)/$(PUGIXML)/.tvh_build: \
 	@touch $@
 
 #
+# faad2 (DAB+ transcoding: it decodes the DAB+ audio)
+#
+
+$(LIB_ROOT)/$(FAAD2)/.tvh_download:
+	$(call DOWNLOAD,$(FAAD2_URL),$(LIB_ROOT)/$(FAAD2_TB),$(FAAD2_SHA1))
+	$(call UNTAR,$(FAAD2_TB),z)
+	@touch $@
+
+$(LIB_ROOT)/$(FAAD2)/.tvh_build: \
+		$(LIB_ROOT)/$(FAAD2)/.tvh_download
+	cd $(LIB_ROOT)/$(FAAD2) && cmake $(CMAKE_OPTS) \
+		-DFAAD_BUILD_CLI=OFF \
+		-S . -B tvh-build
+	$(MAKE) -C $(LIB_ROOT)/$(FAAD2)/tvh-build install
+	@touch $@
+
+#
 # libdvbdab
 #
-# DAB+ transcoding (configure: dvbdab_transcode): with faad2 and the
-# libavcodec tvheadend is built with - the static FFmpeg, which pkg-config
-# finds through support/pkg-config.dvbdab, or the installed one
+# DAB+ transcoding (configure: dvbdab_transcode): with the faad2 built here
+# and the libavcodec tvheadend is built with - the static FFmpeg, which
+# pkg-config finds through support/pkg-config.dvbdab, or the installed one
 #
 
 ifeq ($(CONFIG_DVBDAB_TRANSCODE),yes)
 DVBDAB_TRANSCODE := ON
+DVBDAB_FAAD2     := $(LIB_ROOT)/$(FAAD2)/.tvh_build
 else
 DVBDAB_TRANSCODE := OFF
 endif
@@ -127,6 +159,7 @@ $(LIB_ROOT)/$(LIBDVBDAB)/.tvh_download:
 
 $(LIB_ROOT)/$(LIBDVBDAB)/.tvh_build: \
 		$(LIB_ROOT)/$(PUGIXML)/.tvh_build \
+		$(DVBDAB_FAAD2) \
 		$(LIB_ROOT)/$(LIBDVBDAB)/.tvh_download
 	cd $(LIB_ROOT)/$(LIBDVBDAB) && \
 		PKG_CONFIG_PATH="$(EPREFIX)/lib/pkgconfig:$$PKG_CONFIG_PATH" \
