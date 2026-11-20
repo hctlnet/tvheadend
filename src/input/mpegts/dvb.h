@@ -644,6 +644,9 @@ typedef struct dvb_mux_conf
   dvb_fe_pls_mode_t           dmc_fe_pls_mode;
   uint32_t                    dmc_fe_pls_code;
   uint32_t                    dmc_fe_data_slice;
+  uint16_t                    dmc_fe_pid;       /* PID of an encapsulated stream (T2MI) */
+  uint8_t                     dmc_t2mi_plp;     /* T2MI: the PLP passed on ... */
+  uint8_t                     dmc_t2mi_plp_set; /* ... if set, else the first one with a TS */
   union {
     dvb_qpsk_config_t         dmc_fe_qpsk;
     dvb_qam_config_t          dmc_fe_qam;

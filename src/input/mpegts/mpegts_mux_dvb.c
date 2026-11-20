@@ -22,6 +22,7 @@
 #include "mpegts_dvb.h"
 #include "queue.h"
 #include "settings.h"
+#include "t2mi.h"
 
 #include <sys/types.h>
 #include <sys/ioctl.h>
@@ -130,7 +131,7 @@ dvb_mux_class_delsys_set (void *o, const void *v)
 }
 
 /*
- * Mux type: a sub-mux is carried in its transponder
+ * Mux type: a sub-mux is carried in its transponder (T2MI: in a PID of it)
  */
 static htsmsg_t *
 dvb_mux_class_type_list ( void *o, const char *lang )
@@ -138,6 +139,68 @@ dvb_mux_class_type_list ( void *o, const char *lang )
   static const struct strtab tab[] = {
     { N_("TS"),                       MM_TYPE_TS },
     { N_("TS (input stream)"),        MM_TYPE_ISI },
+    { N_("T2MI"),                     MM_TYPE_T2MI },
+  };
+  (void) o;
+  return strtab2htsmsg(tab, 1, lang);
+}
+
+/* the stream PID only for a sub-mux carried in a PID */
+static uint32_t
+dvb_mux_class_stream_pid_opts ( void *o, uint32_t opts )
+{
+  const mpegts_mux_t *mm = o;
+  if (mm == NULL)
+    return opts | PO_HIDDEN;
+  if (mpegts_mux_in_pid(mm))
+    return opts;
+  return opts | PO_NOUI | PO_NOSAVE;
+}
+
+/* the T2MI fields only for T2MI muxes */
+static uint32_t
+dvb_mux_class_t2mi_opts ( void *o, uint32_t opts )
+{
+  const mpegts_mux_t *mm = o;
+  if (mm == NULL)
+    return opts | PO_HIDDEN;
+  if (mm->mm_type == MM_TYPE_T2MI)
+    return opts;
+  return opts | PO_NOUI | PO_NOSAVE;
+}
+
+/* the PLP of a T2MI mux: -1 = the first one with a TS */
+static const void *
+dvb_mux_class_t2mi_plp_get ( void *o )
+{
+  static int plp;
+  const dvb_mux_t *lm = o;
+  plp = lm->lm_tuning.dmc_t2mi_plp_set ? lm->lm_tuning.dmc_t2mi_plp : -1;
+  return &plp;
+}
+
+static int
+dvb_mux_class_t2mi_plp_set ( void *o, const void *v )
+{
+  dvb_mux_t *lm = o;
+  int plp = *(const int *)v;
+  int set = plp >= 0 && plp <= 255;
+
+  if (set == lm->lm_tuning.dmc_t2mi_plp_set &&
+      (!set || plp == lm->lm_tuning.dmc_t2mi_plp))
+    return 0;
+  lm->lm_tuning.dmc_t2mi_plp_set = set;
+  lm->lm_tuning.dmc_t2mi_plp = set ? plp : 0;
+  return 1;
+}
+
+static htsmsg_t *
+dvb_mux_class_t2mi_format_list ( void *o, const char *lang )
+{
+  static const struct strtab tab[] = {
+    { N_("Auto"),                     T2MI_FORMAT_AUTO },
+    { N_("T2-MI"),                    T2MI_FORMAT_T2MI },
+    { N_("TS piping"),                T2MI_FORMAT_PIPING },
   };
   (void) o;
   return strtab2htsmsg(tab, 1, lang);
@@ -165,13 +228,23 @@ const idclass_t dvb_mux_class =
       .type     = PT_INT,
       .id       = "tstype",
       .name     = N_("Type"),
-      .desc     = N_("Transport stream type: TS (standard), or the TS of "
+      .desc     = N_("Transport stream type: TS (standard), or a sub-mux "
+                     "that follows the tuning of its transponder: the TS of "
                      "one input stream of a DVB-S2 multistream transponder, "
-                     "which follows the tuning of its transponder."),
+                     "or T2MI (a TS carried in a PID: T2-MI or TS piping)."),
       .off      = offsetof(mpegts_mux_t, mm_type),
       .def.i    = MM_TYPE_TS,
       .list     = dvb_mux_class_type_list,
       .opts     = PO_ADVANCED | PO_DOC_NLIST
+    },
+    {
+      .type     = PT_U16,
+      .id       = "pid",
+      .name     = N_("Stream PID"),
+      .desc     = N_("The PID of the transponder the stream of the sub-mux "
+                     "is carried in (T2MI)."),
+      .off      = offsetof(dvb_mux_t, lm_tuning.dmc_fe_pid),
+      .get_opts = dvb_mux_class_stream_pid_opts,
     },
     {
       .type     = PT_STR,
@@ -191,6 +264,28 @@ const idclass_t dvb_mux_class =
                      "they are its sub-muxes, it has the tuning."),
       .off      = offsetof(dvb_mux_t, lm_multistream),
       .opts     = PO_RDONLY | PO_ADVANCED,
+    },
+    {
+      .type     = PT_INT,
+      .id       = "t2mi_plp",
+      .name     = N_("T2MI PLP"),
+      .desc     = N_("The PLP whose TS the mux passes on, -1: the first "
+                     "one with a TS."),
+      .get      = dvb_mux_class_t2mi_plp_get,
+      .set      = dvb_mux_class_t2mi_plp_set,
+      .get_opts = dvb_mux_class_t2mi_opts,
+    },
+    {
+      .type     = PT_INT,
+      .id       = "t2mi_format",
+      .name     = N_("T2MI format"),
+      .desc     = N_("What the PID carries: T2-MI packets (the feed of "
+                     "DVB-T2 transmitters) or the TS itself (TS piping). "
+                     "Auto: detected."),
+      .off      = offsetof(dvb_mux_t, lm_t2mi_format),
+      .list     = dvb_mux_class_t2mi_format_list,
+      .opts     = PO_ADVANCED | PO_DOC_NLIST,
+      .get_opts = dvb_mux_class_t2mi_opts,
     },
     {}
   }
@@ -1192,10 +1287,10 @@ const idclass_t dvb_mux_dab_class =
  * *************************************************************************/
 
 /*
- * A sub-mux is carried in a transponder (an input stream of a multistream
- * transponder) and has its tuning. It keeps the uuid of the transponder and
- * follows its tuning when that changes (NIT, the user): at its save, and
- * when the sub-mux starts. All with global_lock.
+ * A sub-mux is carried in a transponder (in a PID of it: T2MI; an input
+ * stream of a multistream transponder) and has its tuning. It keeps the uuid
+ * of the transponder and follows its tuning when that changes (NIT, the
+ * user): at its save, and when the sub-mux starts. All with global_lock.
  */
 
 /* the same frequency (and polarisation) */
@@ -1212,16 +1307,36 @@ dvb_mux_same_frequency ( const dvb_mux_conf_t *a, const dvb_mux_conf_t *b )
   return 1;
 }
 
+/* the same transponder: what a sub-mux copied from it */
+static int
+dvb_mux_same_transponder ( const dvb_mux_conf_t *a, const dvb_mux_conf_t *b )
+{
+  return dvb_mux_same_frequency(a, b) && a->dmc_fe_stream_id == b->dmc_fe_stream_id;
+}
+
+uint16_t
+dvb_mux_stream_pid ( mpegts_mux_t *mm )
+{
+  if (!mpegts_mux_in_pid(mm))
+    return 0;
+  return ((dvb_mux_t *)mm)->lm_tuning.dmc_fe_pid;
+}
+
 /* a mux that can carry the sub-mux: a multistream transponder for an input
- * stream - an enabled one (not a disabled duplicate, nor another description
- * of the transponder set to ignore) */
+ * stream, the transponder with the same input stream for a PID - an enabled
+ * one (not a disabled duplicate, nor another description of the transponder
+ * set to ignore) */
 static int
 dvb_mux_can_carry ( const dvb_mux_t *p, const dvb_mux_t *sm )
 {
+  const mpegts_mux_t *mm = (const mpegts_mux_t *)sm;
+
   if (mpegts_mux_is_submux((const mpegts_mux_t *)p) ||
       ((const mpegts_mux_t *)p)->mm_enabled != MM_ENABLE)
     return 0;
-  return p->lm_multistream && dvb_mux_same_frequency(&p->lm_tuning, &sm->lm_tuning);
+  if (mpegts_mux_in_bbframes(mm))
+    return p->lm_multistream && dvb_mux_same_frequency(&p->lm_tuning, &sm->lm_tuning);
+  return !p->lm_multistream && dvb_mux_same_transponder(&p->lm_tuning, &sm->lm_tuning);
 }
 
 void
@@ -1248,7 +1363,7 @@ dvb_mux_submux_parent ( dvb_mux_t *sm )
     p = mpegts_mux_find(sm->lm_parent);
     if (p != NULL && p != mm && p->mm_network == mm->mm_network &&
         idnode_is_instance(&p->mm_id, &dvb_mux_class) && !mpegts_mux_is_submux(p) &&
-        ((dvb_mux_t *)p)->lm_multistream)
+        (!mpegts_mux_in_bbframes(mm) || ((dvb_mux_t *)p)->lm_multistream))
       return (dvb_mux_t *)p;
   }
   /* not while the muxes of the network are loaded: the transponder may
@@ -1279,7 +1394,10 @@ dvb_mux_conf_same ( const dvb_mux_conf_t *a, const dvb_mux_conf_t *b )
       a->dmc_fe_stream_id != b->dmc_fe_stream_id ||
       a->dmc_fe_pls_mode != b->dmc_fe_pls_mode ||
       a->dmc_fe_pls_code != b->dmc_fe_pls_code ||
-      a->dmc_fe_data_slice != b->dmc_fe_data_slice)
+      a->dmc_fe_data_slice != b->dmc_fe_data_slice ||
+      a->dmc_fe_pid != b->dmc_fe_pid ||
+      a->dmc_t2mi_plp != b->dmc_t2mi_plp ||
+      a->dmc_t2mi_plp_set != b->dmc_t2mi_plp_set)
     return 0;
   switch (a->dmc_fe_type) {
   case DVB_TYPE_S:
@@ -1303,7 +1421,7 @@ dvb_mux_conf_same ( const dvb_mux_conf_t *a, const dvb_mux_conf_t *b )
 }
 
 /* the tuning of the transponder, except what makes this a sub-mux (its
- * stream); 1 = changed */
+ * stream, its PID and PLP); 1 = changed */
 int
 dvb_mux_submux_sync ( dvb_mux_t *sm )
 {
@@ -1315,6 +1433,9 @@ dvb_mux_submux_sync ( dvb_mux_t *sm )
   memcpy(&dmc, &p->lm_tuning, sizeof(dmc));
   if (mpegts_mux_in_bbframes((mpegts_mux_t *)sm))
     dmc.dmc_fe_stream_id = sm->lm_tuning.dmc_fe_stream_id;
+  dmc.dmc_fe_pid = sm->lm_tuning.dmc_fe_pid;
+  dmc.dmc_t2mi_plp = sm->lm_tuning.dmc_t2mi_plp;
+  dmc.dmc_t2mi_plp_set = sm->lm_tuning.dmc_t2mi_plp_set;
   if (dvb_mux_conf_same(&dmc, &sm->lm_tuning))
     return 0;
   tvhinfo(LS_MPEGTS, "%s: tuning of the transponder %s taken over",
@@ -1376,8 +1497,8 @@ dvb_mux_config_save ( mpegts_mux_t *mm, char *filename, size_t fsize )
 
 /*
  * The name of a sub-mux is the name of what carries it, then one part for
- * it: "ISI <n>" for an input stream. The type is not in the name (it has a
- * field of its own).
+ * it: "ISI <n>" for an input stream, "T2MI <PID>[ PLP <n>]" for a T2-MI
+ * stream. The type is not in the name (it has a field of its own).
  */
 static void
 dvb_mux_submux_name ( mpegts_mux_t *mm, char *buf, size_t len )
@@ -1385,9 +1506,16 @@ dvb_mux_submux_name ( mpegts_mux_t *mm, char *buf, size_t len )
   const dvb_mux_conf_t *dmc = &((dvb_mux_t *)mm)->lm_tuning;
   size_t l = strlen(buf);
 
-  if (mm->mm_type != MM_TYPE_ISI || l + 1 >= len)
+  if (!mpegts_mux_is_submux(mm) || l + 1 >= len)
     return;
-  snprintf(buf + l, len - l, " ISI %d", dmc->dmc_fe_stream_id);
+  buf += l;
+  len -= l;
+  if (mm->mm_type == MM_TYPE_ISI)
+    snprintf(buf, len, " ISI %d", dmc->dmc_fe_stream_id);
+  else if (mm->mm_type == MM_TYPE_T2MI && dmc->dmc_t2mi_plp_set)
+    snprintf(buf, len, " T2MI %u PLP %u", dmc->dmc_fe_pid, dmc->dmc_t2mi_plp);
+  else if (mm->mm_type == MM_TYPE_T2MI)
+    snprintf(buf, len, " T2MI %u", dmc->dmc_fe_pid);
 }
 
 static void
@@ -1744,6 +1872,10 @@ dvb_mux_add_stream
   /* the transponder: lm, the one of the input stream lm, or for a mux with
    * a stream of its own the mux of its frequency without one (made below
    * when there is none) */
+  if (mpegts_mux_in_pid(mm)) {
+    *err = "the mux is carried in a PID, it has no input streams";
+    return NULL;
+  }
   if (mpegts_mux_is_submux(mm)) {
     if ((t = dvb_mux_submux_parent(lm)) == NULL) {
       *err = "the transponder of the mux is not found";

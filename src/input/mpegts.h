@@ -413,13 +413,16 @@ enum mpegts_mux_enable
 enum mpegts_mux_type
 {
   MM_TYPE_TS       = 0,  /* Standard transport stream (default) */
+  MM_TYPE_T2MI     = 1,  /* T2-MI or TS piping in a PID (the TS of a DVB-T2 PLP, ...) */
   MM_TYPE_ISI      = 7,  /* the TS of one input stream of a multistream transponder */
 };
 
-/* a mux carried inside another one: an input stream of a multistream
- * transponder (in its BBFrames) */
+/* a mux carried inside another one: in a PID of its transponder (T2MI), or
+ * an input stream of a multistream transponder (in its BBFrames) */
+#define mpegts_mux_in_pid(mm)      ((mm)->mm_type == MM_TYPE_T2MI)
 #define mpegts_mux_in_bbframes(mm) ((mm)->mm_type == MM_TYPE_ISI)
-#define mpegts_mux_is_submux(mm)   (mpegts_mux_in_bbframes(mm))
+#define mpegts_mux_is_submux(mm) \
+  (mpegts_mux_in_pid(mm) || mpegts_mux_in_bbframes(mm))
 
 enum mpegts_mux_epg_flag
 {
