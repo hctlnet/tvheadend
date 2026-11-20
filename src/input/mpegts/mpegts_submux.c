@@ -35,6 +35,7 @@
 #include "streaming.h"
 #include "profile.h"
 #include "input/mpegts/mpegts_dvb.h"
+#include "input/mpegts/t2mi.h"
 
 /* bytes the queue of a sub-mux takes before it drops (the parent's tuner
  * does not wait for the sub-mux thread) */
@@ -50,6 +51,8 @@ typedef struct mpegts_submux {
   int                    sm_run;    /* atomic */
   uint16_t               sm_pid;    /* the parent's PID the sub-mux is in */
   sbuf_t                 sm_in;     /* packets of that PID */
+  t2mi_t                *sm_t2mi;   /* T2MI: the TS out of the PID */
+  sbuf_t                 sm_out;    /* its TS */
   int                    sm_cc;     /* the continuity counter of the PID */
   uint64_t               sm_packets;
   uint64_t               sm_cc_gaps;  /* packets lost before the sub-mux thread */
@@ -89,6 +92,14 @@ submux_parent ( mpegts_mux_t *mm )
  * The stream of a sub-mux
  * *************************************************************************/
 
+static void
+submux_ts_out ( void *opaque, const uint8_t *ts )
+{
+  mpegts_submux_t *sm = opaque;
+
+  sbuf_append(&sm->sm_out, ts, 188);
+}
+
 /* a packet of the PID of the parent: its continuity tells packets lost on
  * the way (tuner, queue) */
 static int
@@ -106,6 +117,19 @@ submux_packet ( mpegts_submux_t *sm, const uint8_t *data )
     sm->sm_cc = cc;
   }
   return 1;
+}
+
+/* T2MI: the TS out of the PID */
+static void
+submux_t2mi_stream ( mpegts_submux_t *sm, const uint8_t *data, size_t len )
+{
+  t2mi_t *tm = sm->sm_t2mi;
+
+  for ( ; len >= 188; data += 188, len -= 188)
+    if (submux_packet(sm, data))
+      t2mi_packet(tm, data);
+  if (sm->sm_out.sb_ptr > 0)
+    mpegts_input_recv_packets(sm->sm_mmi, &sm->sm_out, MPEGTS_DATA_DECAPSULATED, NULL);
 }
 
 /* the transponder cannot be tuned: the sub-mux fails now, not after its
@@ -139,6 +163,10 @@ submux_process ( mpegts_submux_t *sm, streaming_message_t *msg )
   case SMT_MPEGTS:
     data = pktbuf_ptr(msg->sm_data);
     len = pktbuf_len(msg->sm_data);
+    if (sm->sm_t2mi) {
+      submux_t2mi_stream(sm, data, len);
+      break;
+    }
     /* the packets of the PID are the stream */
     for ( ; len >= 188; data += 188, len -= 188)
       if (submux_packet(sm, data))
@@ -193,6 +221,27 @@ submux_thread ( void *aux )
   return NULL;
 }
 
+/* T2MI: what came out of the PID */
+static void
+submux_t2mi_end ( mpegts_submux_t *sm )
+{
+  mpegts_mux_t *mm = sm->sm_mmi->mmi_mux;
+  const t2mi_t *tm = sm->sm_t2mi;
+  int i;
+  int n = 0;
+
+  for (i = 0; i < 256; i++)
+    n += (tm->tm_plps[i >> 5] >> (i & 31)) & 1;
+  tvhdebug(LS_MPEGTS, "%s - %s: %"PRIu64" packets, %"PRIu64" TS packets of PLP %d "
+           "(%d PLPs with a TS), %"PRIu64" T2-MI packets (%"PRIu64" others, "
+           "%"PRIu64" CRC errors, %"PRIu64" lost), %"PRIu64" BBFrames (%"PRIu64" bad, "
+           "%"PRIu64" resyncs), %"PRIu64" packets lost, %"PRIu64" piping resyncs",
+           mm->mm_nicename, t2mi_format_name(tm->tm_format), tm->tm_in, tm->tm_out,
+           tm->tm_plp, n, tm->tm_packets, tm->tm_other, tm->tm_crc_errors,
+           tm->tm_count_gaps, tm->tm_bt.bt_frames, tm->tm_bt.bt_errors,
+           tm->tm_bt.bt_resyncs, tm->tm_cc_errors, tm->tm_pipe_resyncs);
+}
+
 static void
 submux_free ( mpegts_submux_t *sm )
 {
@@ -211,7 +260,13 @@ submux_free ( mpegts_submux_t *sm )
     pthread_join(sm->sm_thread, NULL);
   }
   streaming_queue_deinit(&sm->sm_sq);
+  if (sm->sm_t2mi) {
+    submux_t2mi_end(sm);
+    t2mi_done(sm->sm_t2mi);
+    free(sm->sm_t2mi);
+  }
   sbuf_free(&sm->sm_in);
+  sbuf_free(&sm->sm_out);
   if (sm->sm_packets)
     tvhdebug(LS_MPEGTS, "%s - %"PRIu64" packets of PID 0x%04x, %"PRIu64" CC gaps",
              sm->sm_mmi->mmi_mux->mm_nicename, sm->sm_packets, sm->sm_pid, sm->sm_cc_gaps);
@@ -441,6 +496,14 @@ submux_input_start_mux ( mpegts_input_t *mi, mpegts_mux_instance_t *mmi, int wei
   sm->sm_pid = pid;
   sm->sm_cc = -1;
   sbuf_init(&sm->sm_in);
+  sbuf_init(&sm->sm_out);
+  if (mm->mm_type == MM_TYPE_T2MI) {
+    dvb_mux_t *lm = (dvb_mux_t *)mm;
+    sm->sm_t2mi = malloc(sizeof(*sm->sm_t2mi));
+    t2mi_init(sm->sm_t2mi, lm->lm_t2mi_format,
+              lm->lm_tuning.dmc_t2mi_plp_set ? lm->lm_tuning.dmc_t2mi_plp : T2MI_PLP_AUTO,
+              submux_ts_out, sm);
+  }
   streaming_queue_init(&sm->sm_sq, 0, SUBMUX_QUEUE_SIZE);
   atomic_set(&sm->sm_run, 1);
   if (tvh_thread_create(&sm->sm_thread, NULL, submux_thread, sm, "submux")) {
@@ -540,7 +603,7 @@ mpegts_submux_init ( void )
   if (mi == NULL)
     return;
   mi->mi_enabled       = 1;
-  mi->mi_mux_types     = 0;   /* the sub-mux types come with their users */
+  mi->mi_mux_types     = 1u << MM_TYPE_T2MI;
   mi->mi_is_enabled    = submux_input_is_enabled;
   mi->mi_get_weight    = submux_input_get_weight;
   mi->mi_warm_mux      = submux_input_warm_mux;
