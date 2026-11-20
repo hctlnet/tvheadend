@@ -53,6 +53,7 @@ typedef struct mpegts_submux {
   char                   sm_name[256]; /* its name at the start, for the thread */
   int                    sm_run;    /* atomic */
   uint16_t               sm_pid;    /* the parent's PID the sub-mux is in */
+  int                    sm_backlog; /* the ring of the parent comes first */
   uint16_t               sm_sid;    /* the parent's service it is in (descrambled) */
   sbuf_t                 sm_in;     /* packets of that PID */
   t2mi_t                *sm_t2mi;   /* T2MI: the TS out of the PID */
@@ -372,6 +373,30 @@ submux_reweight ( mpegts_mux_instance_t *mmi, int opening_weight, int opening_fl
   subscription_change_weight(sm->sm_sub, w);
 }
 
+#if ENABLE_DVBBUFFER
+/* the subscription on the parent gets the ring content of the parent first
+ * (Fast Zap: the parent is warm) */
+static int
+submux_parent_backlog ( mpegts_mux_t *parent, mpegts_service_t *ms, uint16_t pid )
+{
+  mpegts_mux_instance_t *pmmi = parent->mm_active;
+  mpegts_pid_t *mp;
+  mpegts_pid_sub_t *mps;
+  int r = 0;
+
+  if (pmmi == NULL)
+    return 0;
+  tvh_mutex_lock(&pmmi->mmi_input->mi_output_lock);
+  mp = mpegts_mux_find_pid(parent, pid, 0);
+  if (mp)
+    RB_FOREACH(mps, &mp->mp_subs, mps_link)
+      if (mps->mps_owner == ms && mps->mps_backlog)
+        r = 1;
+  tvh_mutex_unlock(&pmmi->mmi_input->mi_output_lock);
+  return r;
+}
+#endif
+
 /* **************************************************************************
  * Input
  * *************************************************************************/
@@ -528,13 +553,32 @@ submux_subscribe ( mpegts_submux_t *sm, mpegts_mux_t *mm, mpegts_mux_t *parent,
   if (ths == NULL)
     return NULL;
   ths->ths_flags &= ~SUBSCRIPTION_ONESHOT;
-  if (svc)
+  if (svc) {
+#if ENABLE_DVBBUFFER
+    /* the carrier service started as one of a warm transponder: its PIDs
+     * got the ring content first */
+    if (sm->sm_pid)
+      sm->sm_backlog = submux_parent_backlog(parent, svc, sm->sm_pid);
+#endif
     return ths;
+  }
   ms = (mpegts_service_t *)ths->ths_service;
   mpegts_pid_init(&pids);
   mpegts_pid_add(&pids, sm->sm_pid, MPS_WEIGHT_RAW);
+#if ENABLE_DVBBUFFER
+  /* a stream decoded by libdvbdab (DAB) starts live: decoding the ring
+   * content first takes longer than the live stream of the tuned parent */
+  if (sm->sm_mmi->mmi_decap)
+    parent->mm_backlog_off++;
+#endif
   r = ms->s_update_pids(ms, &pids);
   mpegts_pid_done(&pids);
+#if ENABLE_DVBBUFFER
+  if (sm->sm_mmi->mmi_decap)
+    parent->mm_backlog_off--;
+  else if (!r)
+    sm->sm_backlog = submux_parent_backlog(parent, ms, sm->sm_pid);
+#endif
   if (r) {
     subscription_unsubscribe(ths, UNSUBSCRIBE_FINAL);
     return NULL;
@@ -653,8 +697,22 @@ submux_input_open_service
   ( mpegts_input_t *mi, mpegts_service_t *s, int flags, int first, int weight )
 {
   mpegts_mux_instance_t *mmi = s->s_dvb_mux->mm_active;
+#if ENABLE_DVBBUFFER
+  mpegts_submux_t *sm = mmi ? mmi->mmi_submux : NULL;
+#endif
 
   mpegts_input_open_service(mi, s, flags, first, weight);
+#if ENABLE_DVBBUFFER
+  /* the sub-mux starts with the ring content of its parent: the service
+   * starts near live from it, as one of a warm mux (only the start: the
+   * sub-mux has no ring pass of its own, its stream is live for it) */
+  if (sm && sm->sm_backlog && first) {
+    sm->sm_backlog = 0;
+    tvh_mutex_lock(&mi->mi_output_lock);
+    ((service_t *)s)->s_dvbbuffer_start = 1;
+    tvh_mutex_unlock(&mi->mi_output_lock);
+  }
+#endif
   if (mmi)
     submux_reweight(mmi, weight, flags);
 }
