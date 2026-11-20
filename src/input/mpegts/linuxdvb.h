@@ -31,12 +31,21 @@ struct mpegts_network;
 
 /* blindscan of a DVB-S network (global_lock): the spectrum of the
  * polarisations ("H", "V", "HV") from start to end (kHz, 0 = 10700000 and
- * 12750000) on a free Neumo tuner; the carriers in it. Errors: EBUSY
+ * 12750000) on a free Neumo tuner; the carriers in it. lock_snr >= 0: then
+ * a tune (linuxdvb_blindscan_tune) at each carrier at least this far above
+ * the noise (0.01 dB) where the network has no transponder. Errors: EBUSY
  * (*err says why), EIO */
 int linuxdvb_blindscan_start
   ( struct mpegts_network *mn, const char *pols, uint32_t start, uint32_t end,
-    const char **err );
+    int lock_snr, const char **err );
 void linuxdvb_blindscan_stop ( struct mpegts_network *mn );
+/* a blind tune at freq (kHz) with the polarisation ("H", "V") and symbol
+ * rate, within range (kHz, the full width; 0: from the symbol rate): the
+ * mux there, else a new one; scanned, a new one deleted when nothing was
+ * found. The mux in muxuuid (UUID_HEX_SIZE) */
+int linuxdvb_blindscan_tune
+  ( struct mpegts_network *mn, uint32_t freq, const char *pol, uint32_t sr,
+    uint32_t range, const char **err, char *muxuuid );
 /* state and the last result, spectra reduced to points points (0 = all) */
 htsmsg_t *linuxdvb_blindscan_result ( struct mpegts_network *mn, int points );
 void linuxdvb_blindscan_done ( void );
