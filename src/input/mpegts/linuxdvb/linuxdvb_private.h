@@ -152,6 +152,13 @@ struct linuxdvb_frontend
   uint32_t                  lfe_sig_multiplier;
   uint32_t                  lfe_snr_multiplier;
   uint32_t                  lfe_grace_period;
+
+  /*
+   * Neumo DVB driver support
+   * Set when RF input is configured, to include DTV_SET_SEC_CONFIGURED in tune
+   */
+  int                       lfe_sec_configured;
+
   /*
    * Neumo DVB driver detection (from FE_GET_EXTENDED_INFO)
    */
@@ -159,6 +166,14 @@ struct linuxdvb_frontend
   int                       lfe_neumo_supported;    /* 1 if driver supports Neumo extensions */
   uint8_t                   lfe_num_rf_inputs;      /* Number of RF inputs available */
   int8_t                    lfe_default_rf_input;   /* Default RF input */
+  int64_t                   lfe_card_id;            /* card_mac_address: the same for the demods of a card */
+
+  /*
+   * Virtual frontend RF input binding (for multi-RF-input adapters)
+   * -1 = not bound (legacy/standard frontend)
+   * 0+ = bound to specific RF input
+   */
+  int8_t                    lfe_rf_input;
 
   /*
    * Satconf (DVB-S only)
@@ -248,6 +263,10 @@ struct linuxdvb_satconf
    * MPEG-TS hooks
    */
   mpegts_input_t        *ls_frontend; ///< Frontend we're proxying for
+  mpegts_input_t        *ls_drive;    ///< Frontend sending the LNB and DiSEqC
+                                      ///  commands now: a slave tuner setting
+                                      ///  up a free RF input of a Neumo card,
+                                      ///  NULL = ls_frontend
   mpegts_mux_instance_t *ls_mmi;      ///< Used within delay diseqc handler
 
   /*
@@ -260,6 +279,8 @@ struct linuxdvb_satconf
    */
   mtimer_t               ls_diseqc_timer;
   int                    ls_diseqc_idx;
+  int                    ls_rf_retries;    /* FE_SET_RF_INPUT: RF input busy, tried again */
+  mtimer_t               ls_rf_timer;      /* ... the next try, for ls_mmi */
   int                    ls_diseqc_repeats;
   int                    ls_diseqc_full;
   int                    ls_switch_rotor;
@@ -404,6 +425,7 @@ extern const idclass_t linuxdvb_adapter_class;
 extern const idclass_t linuxdvb_ca_class;
 
 extern const idclass_t linuxdvb_frontend_dvbt_class;
+extern const idclass_t linuxdvb_frontend_class;
 extern const idclass_t linuxdvb_frontend_dvbs_class;
 extern const idclass_t linuxdvb_frontend_dvbs_slave_class;
 extern const idclass_t linuxdvb_frontend_dvbc_class;
@@ -452,7 +474,7 @@ linuxdvb_frontend_t *
 linuxdvb_frontend_create
   ( htsmsg_t *conf, linuxdvb_adapter_t *la, int number,
     const char *fe_path, const char *dmx_path, const char *dvr_path,
-    dvb_fe_type_t type, const char *name );
+    dvb_fe_type_t type, const char *name, int8_t rf_input );
 
 void linuxdvb_frontend_save ( linuxdvb_frontend_t *lfe, htsmsg_t *m );
 
@@ -565,6 +587,8 @@ int
 linuxdvb_diseqc_send
   (int fd, uint8_t framing, uint8_t addr, uint8_t cmd, int len, ...);
 int linuxdvb_diseqc_set_volt ( linuxdvb_satconf_t *ls, int volt );
+/* as linuxdvb_diseqc_set_volt(), a result of the driver (> 0) as it is */
+int linuxdvb_diseqc_set_volt2 ( linuxdvb_satconf_t *ls, int volt );
 
 /*
  * Satconf
@@ -607,7 +631,7 @@ int linuxdvb_satconf_start ( linuxdvb_satconf_t *ls, int delay, int vol );
 void linuxdvb_satconf_reset ( linuxdvb_satconf_t *ls );
 
 static inline int linuxdvb_satconf_fe_fd ( linuxdvb_satconf_t *ls )
-  { return ((linuxdvb_frontend_t *)ls->ls_frontend)->lfe_fe_fd; }
+  { return ((linuxdvb_frontend_t *)(ls->ls_drive ?: ls->ls_frontend))->lfe_fe_fd; }
 
 /*
  * FE_SET_PROPERTY and FE_GET_PROPERTY. The headers of the Neumo driver give
@@ -629,5 +653,24 @@ static inline int linuxdvb_satconf_fe_fd ( linuxdvb_satconf_t *ls )
   ((void)(neumo), ioctl(fd, FE_GET_PROPERTY, p))
 #endif
 
+/* a tuner on an RF input of a Neumo card (a virtual frontend): the RF input,
+ * not one of its tuners, is the master - the tuner that finds it free sets it
+ * up, the others follow (the driver: reservations of the input) */
+static inline int linuxdvb_frontend_rf_port ( linuxdvb_frontend_t *lfe )
+  { return lfe->lfe_rf_input >= 0 && lfe->lfe_neumo_supported; }
+
+/* lfe2 is a tuner on the RF input of lfe: the same input of the same card */
+static inline int linuxdvb_frontend_same_rf_input
+  ( linuxdvb_frontend_t *lfe, linuxdvb_frontend_t *lfe2 )
+  { return linuxdvb_frontend_rf_port(lfe2) && lfe2->lfe_rf_input == lfe->lfe_rf_input &&
+           lfe2->lfe_card_id == lfe->lfe_card_id; }
+
+/* reserve the RF input of the tuner without controlling it (Neumo driver):
+ * 0 = ok, -1 = failed */
+int linuxdvb_frontend_rf_input_slave ( linuxdvb_frontend_t *lfe );
+
+/* close the idle demods still holding the RF input of the tuner (the driver
+ * keeps a reservation until the device is closed); returns how many */
+int linuxdvb_frontend_rf_input_release ( linuxdvb_frontend_t *lfe, int except_own );
 
 #endif /* __TVH_LINUXDVB_PRIVATE_H__ */

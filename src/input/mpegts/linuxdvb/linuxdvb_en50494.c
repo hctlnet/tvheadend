@@ -53,6 +53,9 @@
 #define LINUXDVB_EN50494_SAT_A                 0x00
 #define LINUXDVB_EN50494_SAT_B                 0x01
 
+/* waits (68-118 ms) for the command of another tuner on the cable */
+#define LINUXDVB_EN50494_BUSY_TRIES            2
+
 /* EN50607 */
 #define LINUXDVB_EN50607_FRAME_NORMAL          0x70
 #define LINUXDVB_EN50607_FRAME_MULTIHOME       0x71
@@ -498,7 +501,7 @@ linuxdvb_en50494_tune_internal
     int vol, int pol, int band, int freq,
     int fd, linuxdvb_satconf_t *volt_lsp, int repeats )
 {
-  int ret = 0, i, rfreq;
+  int ret = 0, i, rfreq, busy = 0;
   int ver2 = linuxdvb_unicable_is_en50607(ld->ld_type);
   linuxdvb_en50494_t *le = (linuxdvb_en50494_t*) ld;
   uint8_t data1, data2, data3;
@@ -532,7 +535,7 @@ linuxdvb_en50494_tune_internal
   }
 
   /* setup en50494 switch */
-  for (i = 0; i <= repeats; i++) {
+  for (i = 0; i <= repeats + busy; i++) {
     /* to avoid repeated collision, wait a random time 68-118
      * 67,5 is the typical diseqc-time */
     if (i != 0) {
@@ -542,10 +545,17 @@ linuxdvb_en50494_tune_internal
       tvh_safe_usleep(ms*1000);
     }
 
-    /* use 18V */
-    ret = linuxdvb_diseqc_set_volt(volt_lsp, 1);
+    /* use 18V; the driver (Neumo) refuses it while another tuner sends a
+     * command on the cable (a result > 0): wait as after a collision */
+    ret = linuxdvb_diseqc_set_volt2(volt_lsp, 1);
+    if (ret > 0 && busy < LINUXDVB_EN50494_BUSY_TRIES) {
+      tvhdebug(LS_EN50494, "another tuner sends a command on the cable, waiting");
+      busy++;
+      continue;
+    }
     if (ret) {
-      tvherror(LS_EN50494, "error setting lnb voltage to 18V");
+      tvherror(LS_EN50494, "error setting lnb voltage to 18V%s",
+               ret > 0 ? " (another tuner sends a command on the cable)" : "");
       break;
     }
 
@@ -650,9 +660,21 @@ linuxdvb_en50494_tune
   if (linuxdvb_en50494_lock_cable(lock))
     return -1;
 
-  if (group && !le->le_is_master) {
+  /* not for a tuner on an RF input of a Neumo card: the driver lets each of
+   * them send its own commands on the cable (unicable mode of the input),
+   * and the master's demod may be on another input; the group's lock keeps
+   * the commands apart */
+  if (group && !le->le_is_master &&
+      !linuxdvb_frontend_rf_port((linuxdvb_frontend_t *)lsp->ls_frontend)) {
     int mfd = linuxdvb_unicable_get_master_fd(group, &master);
-    if (mfd >= 0) {
+    if (mfd >= 0 &&
+        linuxdvb_frontend_rf_port((linuxdvb_frontend_t *)master->lse_parent->ls_frontend)) {
+      /* nor through a master on an RF input of a Neumo card: its demod may
+       * listen on another input (a tuner of it in use there) */
+      tvhlog(tvhlog_limit(&group->lug_nomaster_log, 3600) ? LOG_WARNING : LOG_DEBUG,
+             LS_EN50494, "group %d: the master is on an RF input of a Neumo card, "
+             "the slave sends itself", le->le_group_id);
+    } else if (mfd >= 0) {
       fd = mfd;
       volt_lsp = master->lse_parent;
       tvhtrace(LS_EN50494, "slave routing through master: group=%d fd=%d",
