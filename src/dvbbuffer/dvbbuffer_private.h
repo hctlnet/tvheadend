@@ -43,9 +43,14 @@ void dvbbuffer_conf_init(void);
  * thread (mi_output_lock); it is destroyed when the mux stops or is no
  * longer kept warm, after it was unpublished.
  */
+/* PMT tables of a warm mux at most (one per PMT PID of its services) */
+#define DVBBUFFER_PMT_MAX 256
+
 typedef struct dvbbuffer_mux {
   dvbbuffer_ring_t *dm_ring;
   char             *dm_name;
+  mpegts_table_t   *dm_pmt[DVBBUFFER_PMT_MAX]; /* the PMTs kept current */
+  int               dm_pmt_n;
 } dvbbuffer_mux_t;
 
 void dvbbuffer_mux_init(void);

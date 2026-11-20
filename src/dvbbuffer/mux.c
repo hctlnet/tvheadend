@@ -10,8 +10,23 @@
 
 #include "dvbbuffer_private.h"
 
+/* a ring holding less than this (us) has no backlog to start from yet (the
+ * mux was just tuned): new subscriptions join live */
+#define DVBBUFFER_MIN_BACKLOG  1000000
+
+/* the first ECM of an ECM PID is searched from DVBBUFFER_ECM_MARGIN into the
+ * backlog on (a CA client's ECM filter opened up to this much later starts
+ * before it), DVBBUFFER_ECM_SEARCH long (us) */
+#define DVBBUFFER_ECM_MARGIN   300000
+#define DVBBUFFER_ECM_SEARCH  1500000
+
 static mpegts_listener_t dvbbuffer_mux_listener;
 static int dvbbuffer_mux_rings;     /* atomic */
+static mtimer_t dvbbuffer_mux_pmt_timer;
+
+/* new services and PMT PIDs of the muxes with a ring buffer: checked this
+ * often (s) */
+#define DVBBUFFER_PMT_CHECK  60
 
 /* kept warm (prebuffer) */
 int
@@ -26,6 +41,115 @@ int
 dvbbuffer_mux_wanted(mpegts_mux_t *mm)
 {
   return dvbbuffer_mux_prebuffer(mm);
+}
+
+/*
+ * The PMTs of the services of a mux with a ring buffer are kept current:
+ * tvh reads a PMT only for running services, the one stored for a service
+ * may be old (an audio track came or went since). A service started on the
+ * mux would then restart its streams for the changed PMT right after its
+ * backlog went out, and wait for the next keyframe like a cold start. The
+ * tables join live (no backlog: the ring holds the older PMTs); for a
+ * running service they find what its own PMT monitor finds.
+ */
+static int
+dvbbuffer_mux_has_pmt(const dvbbuffer_mux_t *dm, int pid)
+{
+  int i;
+
+  for (i = 0; i < dm->dm_pmt_n; i++)
+    if (dm->dm_pmt[i]->mt_pid == pid)
+      return 1;
+  return 0;
+}
+
+/* an enabled service of the mux has this PMT PID */
+static int
+dvbbuffer_mux_pmt_used(mpegts_mux_t *mm, int pid)
+{
+  mpegts_service_t *s;
+
+  LIST_FOREACH(s, &mm->mm_services, s_dvb_mux_link)
+    if (s->s_enabled && s->s_components.set_pmt_pid == pid)
+      return 1;
+  return 0;
+}
+
+/* the PMT tables follow the services (global_lock): the tables of PMT PIDs
+ * no enabled service has any more (a service changed its PMT PID or is
+ * gone) are closed, those of new ones opened */
+static void
+dvbbuffer_mux_pmt_sync(mpegts_mux_t *mm)
+{
+  static tvhlog_limit_t limit_pmt_max;
+  dvbbuffer_mux_t *dm = mm->mm_dvbbuffer;
+  mpegts_service_t *s;
+  mpegts_table_t *mt;
+  int pid, i;
+
+  lock_assert(&global_lock);
+  if (dm == NULL)
+    return;
+  for (i = 0; i < dm->dm_pmt_n; ) {
+    mt = dm->dm_pmt[i];
+    if (dvbbuffer_mux_pmt_used(mm, mt->mt_pid)) {
+      i++;
+      continue;
+    }
+    mpegts_table_destroy(mt);
+    mpegts_table_release(mt);
+    dm->dm_pmt[i] = dm->dm_pmt[--dm->dm_pmt_n];
+  }
+  mm->mm_backlog_off++;
+  LIST_FOREACH(s, &mm->mm_services, s_dvb_mux_link) {
+    pid = s->s_components.set_pmt_pid;
+    if (!s->s_enabled || pid <= 0 || pid >= 0x1fff || dvbbuffer_mux_has_pmt(dm, pid))
+      continue;
+    if (dm->dm_pmt_n >= DVBBUFFER_PMT_MAX) {
+      /* the timer passes here every minute: once an hour is enough */
+      if (tvhlog_limit(&limit_pmt_max, 3600))
+        tvhdebug(LS_DVBBUFFER, "%s: more than %d PMT PIDs, the PMTs of the "
+                 "other services are not kept current", mm->mm_nicename,
+                 DVBBUFFER_PMT_MAX);
+      break;
+    }
+    /* opaque dm: a table of its own, not the one of a scan or a service;
+     * with the weight of the scan PMTs, below MPS_WEIGHT_ALLLIMIT: an input
+     * with a PID limit (SAT>IP without full mux) drops these PIDs first,
+     * not the PIDs of the viewers, and they do not switch it to all PIDs */
+    mt = mpegts_table_add(mm, DVB_PMT_BASE, DVB_PMT_MASK, dvb_pmt_callback, dm,
+                          "dvbbuffer-pmt", LS_TBL_BASE, MT_CRC, pid, MPS_WEIGHT_PMT_SCAN);
+    mpegts_table_grab(mt);
+    dm->dm_pmt[dm->dm_pmt_n++] = mt;
+  }
+  mm->mm_backlog_off--;
+}
+
+/* close them: destroy (a no-op when mpegts_mux_stop() did it already), then
+ * drop our reference (global_lock) */
+static void
+dvbbuffer_mux_pmt_stop(dvbbuffer_mux_t *dm)
+{
+  int i;
+
+  for (i = 0; i < dm->dm_pmt_n; i++) {
+    mpegts_table_destroy(dm->dm_pmt[i]);
+    mpegts_table_release(dm->dm_pmt[i]);
+  }
+  dm->dm_pmt_n = 0;
+}
+
+static void
+dvbbuffer_mux_pmt_cb(void *aux)
+{
+  mpegts_network_t *mn;
+  mpegts_mux_t *mm;
+
+  LIST_FOREACH(mn, &mpegts_network_all, mn_global_link)
+    LIST_FOREACH(mm, &mn->mn_muxes, mm_network_link)
+      dvbbuffer_mux_pmt_sync(mm);
+  mtimer_arm_rel(&dvbbuffer_mux_pmt_timer, dvbbuffer_mux_pmt_cb, NULL,
+                 sec2mono(DVBBUFFER_PMT_CHECK));
 }
 
 /*
@@ -186,6 +310,7 @@ dvbbuffer_mux_attach(mpegts_mux_t *mm)
   mm->mm_dvbbuffer = dm;
   tvh_mutex_unlock(&mi->mi_output_lock);
   atomic_add(&dvbbuffer_mux_rings, 1);
+  dvbbuffer_mux_pmt_sync(mm);
 
   tvhinfo(LS_DVBBUFFER, "%s: ring buffer started (%u s, %u kbit/s%s)",
           dm->dm_name, dvbbuffer_conf.buffer_sec, kbps,
@@ -225,6 +350,7 @@ dvbbuffer_mux_detach(mpegts_mux_t *mm)
   }
   atomic_dec(&dvbbuffer_mux_rings, 1);
   tvhinfo(LS_DVBBUFFER, "%s: ring buffer stopped", dm->dm_name);
+  dvbbuffer_mux_pmt_stop(dm);
   dvbbuffer_mux_free(dm);
 }
 
@@ -266,6 +392,67 @@ dvbbuffer_mux_feed0(mpegts_mux_t *mm, const uint8_t *tsb, int len,
   dvbbuffer_ring_feed(r, tsb, len, getfastmonoclock());
   sp->end = dvbbuffer_ring_head(r);
   return sp->end - sp->seq <= dvbbuffer_ring_capacity(r) / 2;
+}
+
+/* the ring holds a backlog for new PID subscriptions (mi_output_lock) */
+int
+dvbbuffer_mux_backlog_ready(mpegts_mux_t *mm)
+{
+  return mm->mm_dvbbuffer != NULL &&
+         dvbbuffer_ring_oldest(mm->mm_dvbbuffer->dm_ring) <=
+           getfastmonoclock() - DVBBUFFER_MIN_BACKLOG;
+}
+
+/*
+ * The backlog for new PID subscriptions: the last buffer_sec of the ring, by
+ * time (input thread, mi_output_lock held). Scrambled services get at most
+ * DVBBUFFER_SCRAMBLED_MAX: the descrambler queues their backlog at once and
+ * decrypts it with the keys of the first ECM; it follows one key change in
+ * it, a second one goes unnoticed (the queued packets carry about the same
+ * time) and the period after it would get the old key of its parity. Below
+ * the shortest crypto period of pay TV (7 s, e.g. HD+ and Sky) the backlog
+ * holds one key change at most.
+ */
+#define DVBBUFFER_SCRAMBLED_MAX 6000000
+
+void
+dvbbuffer_mux_backlog(mpegts_mux_t *mm, dvbbuffer_span_t *sp, const uint8_t *capids)
+{
+  dvbbuffer_ring_t *r = mm->mm_dvbbuffer->dm_ring;
+  int64_t now = getfastmonoclock(), win = (int64_t)dvbbuffer_conf.buffer_sec * 1000000;
+  int64_t from;
+  uint8_t left[8192 / 8];
+  uint64_t seq, lim, first = 0;
+  const uint8_t *p;
+  int pid, n = 0;
+
+  if (capids && win > DVBBUFFER_SCRAMBLED_MAX)
+    win = DVBBUFFER_SCRAMBLED_MAX;
+  from = now - win;
+  sp->seq = dvbbuffer_ring_seq_at(r, from);
+  sp->end = dvbbuffer_ring_head(r);
+  if (capids == NULL)
+    return;
+  /* scrambled: from the first ECM on, of each ECM PID the latest (the CA
+   * system in use may not be known yet) - the packets before it may belong
+   * to a key whose ECM is older than the window (a key change right at its
+   * start); ECMs repeat well within DVBBUFFER_ECM_SEARCH */
+  memcpy(left, capids, sizeof(left));
+  seq = dvbbuffer_ring_seq_at(r, from + DVBBUFFER_ECM_MARGIN);
+  lim = dvbbuffer_ring_seq_at(r, from + DVBBUFFER_ECM_MARGIN + DVBBUFFER_ECM_SEARCH);
+  for (; (seq = dvbbuffer_ring_find_pusi(r, seq, lim, left)) < lim; seq++) {
+    if (dvbbuffer_ring_span(r, seq, seq + 1, &p) == 0)
+      break;
+    pid = ((p[1] & 0x1f) << 8) | p[2];
+    left[pid >> 3] &= ~(1 << (pid & 7));
+    first = seq;
+    n++;
+  }
+  if (n) {
+    tvhdebug(LS_DVBBUFFER, "%s: backlog from the first ECM on (%d ECM PID(s)), %"PRIu64
+             " packets later", mm->mm_nicename, n, first - sp->seq);
+    sp->seq = first;
+  }
 }
 
 /* the next piece of the stored chunk in one piece of ring memory: its
@@ -323,6 +510,8 @@ dvbbuffer_mux_init(void)
   dvbbuffer_mux_listener.ml_mux_stop   = dvbbuffer_mux_stop_cb;
   dvbbuffer_mux_listener.ml_mux_delete = dvbbuffer_mux_delete_cb;
   mpegts_add_listener(&dvbbuffer_mux_listener);
+  mtimer_arm_rel(&dvbbuffer_mux_pmt_timer, dvbbuffer_mux_pmt_cb, NULL,
+                 sec2mono(DVBBUFFER_PMT_CHECK));
 }
 
 /*
@@ -336,6 +525,7 @@ dvbbuffer_mux_done(void)
 
   lock_assert(&global_lock);
 
+  mtimer_disarm(&dvbbuffer_mux_pmt_timer);
   mpegts_rem_listener(&dvbbuffer_mux_listener);
   LIST_FOREACH(mn, &mpegts_network_all, mn_global_link)
     LIST_FOREACH(mm, &mn->mn_muxes, mm_network_link)
