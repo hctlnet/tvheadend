@@ -17,6 +17,7 @@
  */
 
 #include "input.h"
+#include "dvbbuffer/tvh_dvbbuffer.h"
 #include "tsdemux.h"
 #include "streaming.h"
 #include "access.h"
@@ -1630,6 +1631,31 @@ mpegts_input_process_packet
   ( mpegts_input_t *mi, mpegts_packet_t *mpkt )
 {
   mpegts_mux_t *mm = mpkt->mp_mux;
+#if ENABLE_DVBBUFFER
+  dvbbuffer_span_t sp;
+  const uint8_t *data;
+  int len, bytes = 0, cc_restart = mpkt->mp_cc_restart;
+
+  /* the ring belongs to the input the mux runs on (it is used under its
+   * mi_output_lock): a chunk queued here before the mux moved to another
+   * input does not touch it, it goes as without a ring */
+  if (mm && mm->mm_active && mm->mm_active->mmi_input != mi)
+    return mpegts_input_process(mi, mm, mpkt->mp_data, mpkt->mp_len,
+                                mpkt->mp_cc_restart);
+
+  /* a mux with a ring buffer: the chunk goes into the ring first, tvh
+   * processes it from there */
+  if (mm && mm->mm_active && dvbbuffer_mux_feed(mm, mpkt->mp_data, mpkt->mp_len,
+                                                cc_restart, &sp)) {
+    while ((len = dvbbuffer_mux_span(mm, &sp, &data)) > 0) {
+      bytes += mpegts_input_process(mi, mm, data, len, cc_restart);
+      cc_restart = 0;
+    }
+    if (cc_restart)
+      bytes += mpegts_input_process(mi, mm, mpkt->mp_data, 0, cc_restart);
+    return bytes;
+  }
+#endif
   return mpegts_input_process(mi, mm, mpkt->mp_data, mpkt->mp_len,
                               mpkt->mp_cc_restart);
 }

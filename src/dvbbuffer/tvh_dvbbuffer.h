@@ -1,0 +1,63 @@
+/*
+ *  Tvheadend - instant channel switching
+ *  Copyright (C) 2026 L-S-D
+ *
+ *  This program is free software: you can redistribute it and/or modify
+ *  it under the terms of the GNU General Public License as published by
+ *  the Free Software Foundation, either version 3 of the License, or
+ *  (at your option) any later version.
+ */
+
+#ifndef __TVH_DVBBUFFER_H__
+#define __TVH_DVBBUFFER_H__
+
+#include "build.h"
+
+#include <stdint.h>
+
+struct mpegts_mux;
+struct mpegts_service;
+struct streaming_target;
+
+#if ENABLE_DVBBUFFER
+
+void dvbbuffer_init(void);
+void dvbbuffer_done(void);
+
+/* 1 while the module runs (capability "dvbbuffer", configuration tab) */
+extern uint32_t dvbbuffer_running;
+
+/* the number of muxes with a ring buffer now */
+int dvbbuffer_mux_count(void);
+
+/*
+ * The ring buffer of a warm mux sits in front of tvh's input processing
+ * (mpegts_input_process(), input thread, mi_output_lock held): every chunk
+ * goes into the ring first, tvh then processes it from the ring memory.
+ */
+typedef struct dvbbuffer_span {
+  uint64_t seq, end;
+} dvbbuffer_span_t;
+
+/* 1 = process the chunk from the ring, piece by piece (dvbbuffer_mux_span),
+   0 = process the chunk itself (no ring, or the chunk is too large) */
+int dvbbuffer_mux_feed0(struct mpegts_mux *mm, const uint8_t *tsb, int len,
+                        int cc_restart, dvbbuffer_span_t *sp);
+#define dvbbuffer_mux_feed(mm, tsb, len, cc_restart, sp) \
+  ((mm)->mm_dvbbuffer ? dvbbuffer_mux_feed0(mm, tsb, len, cc_restart, sp) : 0)
+/* the next piece in one piece of ring memory: bytes, 0 = done */
+int dvbbuffer_mux_span(struct mpegts_mux *mm, dvbbuffer_span_t *sp, const uint8_t **data);
+
+/* mux property "prebuffer" changed, global_lock held */
+void dvbbuffer_mux_prebuffer_notify(void *p, const char *lang);
+
+
+
+#else
+
+static inline void dvbbuffer_init(void) { }
+static inline void dvbbuffer_done(void) { }
+
+#endif
+
+#endif /* __TVH_DVBBUFFER_H__ */

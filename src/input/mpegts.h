@@ -522,6 +522,12 @@ struct mpegts_mux
    */
 
   uint64_t                    mm_input_pos;
+#if ENABLE_DVBBUFFER
+  /* Instant zapping: ring buffer of this mux, set/cleared
+   * under mi_output_lock; prebuffer = keep this mux warm (persisted) */
+  struct dvbbuffer_mux       *mm_dvbbuffer;
+  int                         mm_prebuffer;
+#endif
   RB_HEAD(, mpegts_pid)       mm_pids;
   LIST_HEAD(, mpegts_pid_sub) mm_all_subs;
   int                         mm_last_pid;
