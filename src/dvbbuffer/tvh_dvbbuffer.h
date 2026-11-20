@@ -60,11 +60,16 @@ void dvbbuffer_mux_backlog(struct mpegts_mux *mm, dvbbuffer_span_t *sp,
 void dvbbuffer_mux_prebuffer_notify(void *p, const char *lang);
 
 
+/* packets of one service's ring backlog at most (buffer_sec at 25 Mbit/s):
+ * the descrambler queues that many until the first key, and those of 3 s
+ * more (the live packets while the key is on its way) */
+uint32_t dvbbuffer_backlog_packets(void);
 
 #else
 
 static inline void dvbbuffer_init(void) { }
 static inline void dvbbuffer_done(void) { }
+static inline uint32_t dvbbuffer_backlog_packets(void) { return 0; }
 
 #endif
 

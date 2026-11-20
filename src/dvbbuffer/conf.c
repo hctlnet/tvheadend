@@ -34,6 +34,19 @@ dvbbuffer_conf_fixup(void)
     dvbbuffer_conf.max_bitrate_kbps = 250000;
 }
 
+/* the descrambler queue of a service started from the ring holds its
+ * backlog and the live packets until the first key: room for these many
+ * seconds of them (the round trip to the CA server, a slow card) */
+#define DVBBUFFER_KEY_WAIT_SEC 3
+
+uint32_t
+dvbbuffer_backlog_packets(void)
+{
+  /* 25 Mbit/s is above any single service; 1504 bits per packet */
+  return dvbbuffer_running ?
+         (dvbbuffer_conf.buffer_sec + DVBBUFFER_KEY_WAIT_SEC) * (25000000u / 1504) : 0;
+}
+
 static void
 dvbbuffer_conf_class_changed(idnode_t *self)
 {
