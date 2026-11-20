@@ -425,16 +425,21 @@ enum mpegts_mux_type
   MM_TYPE_T2MI     = 1,  /* T2-MI or TS piping in a PID (the TS of a DVB-T2 PLP, ...) */
   MM_TYPE_DAB_MPE  = 2,  /* DAB via MPE (IP multicast in MPE sections) */
   MM_TYPE_DAB_ETI  = 3,  /* DAB via ETI-NA (direct ETI encapsulation) */
+  MM_TYPE_DAB_GSE  = 4,  /* DAB via GSE (IP multicast in GSE) */
+  MM_TYPE_GSE      = 5,  /* GSE stream (may upgrade to DAB-GSE if DAB detected) */
   MM_TYPE_DAB_TSNI = 6,  /* DAB via TS NI V.11 (incrementing table_id 0x69-0x9A) */
   MM_TYPE_ISI      = 7,  /* the TS of one input stream of a multistream transponder */
 };
 
-/* a mux carried inside another one: in a PID of its transponder (T2MI,
- * DAB), or an input stream of a multistream transponder (in its BBFrames) */
+/* a mux carried inside another one: in a PID of its transponder (DAB), or
+ * in the BBFrames of a multistream transponder (an input stream: TS, GSE,
+ * DAB in GSE) */
 #define mpegts_mux_in_pid(mm) \
   ((mm)->mm_type == MM_TYPE_T2MI || (mm)->mm_type == MM_TYPE_DAB_MPE || \
    (mm)->mm_type == MM_TYPE_DAB_ETI || (mm)->mm_type == MM_TYPE_DAB_TSNI)
-#define mpegts_mux_in_bbframes(mm) ((mm)->mm_type == MM_TYPE_ISI)
+#define mpegts_mux_in_bbframes(mm) \
+  ((mm)->mm_type == MM_TYPE_ISI || (mm)->mm_type == MM_TYPE_GSE || \
+   (mm)->mm_type == MM_TYPE_DAB_GSE)
 #define mpegts_mux_is_submux(mm) \
   (mpegts_mux_in_pid(mm) || mpegts_mux_in_bbframes(mm))
 
@@ -559,8 +564,8 @@ struct mpegts_mux
   int                         mm_descrambler_flush;
 
   /*
-   * Secondary scanning (DAB probe): gets all packets of the mux while it
-   * is set (the input thread, mi_output_lock)
+   * Secondary scanning (DAB, ISI, GSE probes): gets all packets of the mux
+   * while it is set (the input thread, mi_output_lock)
    */
   void                       *mm_secondary_ctx;
   void (*mm_secondary_cb)(void *ctx, const uint8_t *pkt, int len);
@@ -569,6 +574,12 @@ struct mpegts_mux
    * DAB probe context (the DAB ensembles carried in the mux)
    */
   void                       *mm_dab_probe_ctx;
+
+  /*
+   * ISI probe context (for Neumo driver ISI scanning on DVB-S2)
+   */
+  void                       *mm_isi_probe_ctx;
+
 
   /*
    * Functions
@@ -1295,6 +1306,19 @@ int  dvb_mux_set_dab_ensemble(mpegts_mux_t *mm, const char *label);
 #define mpegts_dab_probe_wait(mm, result, weight) (0)
 #define mpegts_dab_probe_waiting(mm)              (0)
 #define dvb_mux_set_dab_ensemble(mm, label)     (0)
+#endif
+
+/*
+ * ISI probe (Neumo driver only, it reads linuxdvb frontends)
+ */
+#if ENABLE_LINUXDVB
+void mpegts_isi_probe_start(mpegts_mux_t *mm);
+int  mpegts_isi_probe_complete(mpegts_mux_t *mm, int evaluate);
+int  mpegts_isi_probe_is_done(mpegts_mux_t *mm);
+#else
+static inline void mpegts_isi_probe_start(mpegts_mux_t *mm) { }
+static inline int  mpegts_isi_probe_complete(mpegts_mux_t *mm, int evaluate) { return 0; }
+static inline int  mpegts_isi_probe_is_done(mpegts_mux_t *mm) { return 1; }
 #endif
 
 #endif /* __TVH_MPEGTS_H__ */
