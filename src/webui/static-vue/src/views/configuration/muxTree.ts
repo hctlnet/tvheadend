@@ -359,3 +359,41 @@ export function countMuxes(nodes: MuxTreeNode[]): number {
   for (const x of nodes) n += 1 + countMuxes(x.children)
   return n
 }
+
+/* the text a mux is found by: its name and label, type, provider network
+ * and tuning (lower case) */
+export function muxSearchText(node: MuxTreeNode): string {
+  const r = node.row
+  return [r.name, node.label, muxTypeName(r.tstype), r.pnetwork_name, tuningLabel(r)]
+    .filter(Boolean)
+    .join(' ')
+    .toLowerCase()
+}
+
+export interface TreeFilterResult {
+  /* the nodes shown: a match, or a match below them */
+  show: Set<string>
+  /* the nodes opened for a match below them */
+  open: Set<string>
+  /* the nodes that match themselves: all below them stays browsable */
+  self: Set<string>
+}
+
+/* which nodes a filter shows: `match` for the node itself */
+export function filterTree(nodes: MuxTreeNode[], match: (n: MuxTreeNode) => boolean): TreeFilterResult {
+  const res: TreeFilterResult = { show: new Set(), open: new Set(), self: new Set() }
+  const walk = (n: MuxTreeNode): boolean => {
+    let below = false
+    for (const c of n.children) if (walk(c)) below = true
+    const self = match(n)
+    if (self) res.self.add(n.key)
+    if (below) res.open.add(n.key)
+    if (self || below) {
+      res.show.add(n.key)
+      return true
+    }
+    return false
+  }
+  for (const n of nodes) walk(n)
+  return res
+}

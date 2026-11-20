@@ -433,3 +433,62 @@ describe('DvbMuxTreeView load errors', () => {
     expect(shows(w, '11494H')).toBe(true)
   })
 })
+
+async function typeFilter(w: Wrapper, text: string) {
+  await w.find('.mux-tree__search input').setValue(text)
+  /* the filter waits 250 ms for the typing to end */
+  await new Promise((r) => setTimeout(r, 300))
+  await flushPromises()
+}
+
+describe('DvbMuxTreeView filter', () => {
+  it('finds a mux in a network that was not open, and shows only what matches', async () => {
+    const s = server()
+    multistream(s)
+    const w = await mountTree(s)
+    await typeFilter(w, 'isi 14')
+    expect(shows(w, 'ISI 14')).toBe(true)
+    expect(shows(w, '12226V')).toBe(true)
+    expect(shows(w, 'ISI 3')).toBe(false)
+    expect(shows(w, '11494H')).toBe(false)
+    expect(shows(w, 'IPTV Automatic Network')).toBe(false)
+  })
+
+  it('closes a row the filter opened', async () => {
+    const w = await mountTree()
+    await typeFilter(w, '11494')
+    expect(shows(w, '11494H')).toBe(true)
+    await expand(w, 'Astra (1)')
+    expect(shows(w, '11494H')).toBe(false)
+    await expand(w, 'Astra (1)')
+    expect(shows(w, '11494H')).toBe(true)
+  })
+
+  it('shows the muxes whose scan failed, or the disabled ones', async () => {
+    const s = server()
+    multistream(s)
+    s.muxes[1].enabled = 0
+    const w = await mountTree(s)
+    await w.find('select.mux-tree__select').setValue('failed')
+    await flushPromises()
+    expect(shows(w, 'ISI 3')).toBe(true)
+    expect(shows(w, 'ISI 14')).toBe(false)
+    expect(shows(w, 'Channel One')).toBe(false)
+    await w.find('select.mux-tree__select').setValue('disabled')
+    await flushPromises()
+    expect(shows(w, 'Channel One')).toBe(true)
+    expect(shows(w, 'ISI 3')).toBe(false)
+  })
+
+  it('shows only the transponders with sub-muxes', async () => {
+    const s = server()
+    multistream(s)
+    const w = await mountTree(s)
+    await expand(w, 'Astra (4)')
+    expect(shows(w, '11494H')).toBe(true)
+    const boxes = w.findAll('label.mux-tree__check input')
+    await boxes[boxes.length - 1].setValue(true)
+    expect(shows(w, '11494H')).toBe(false)
+    expect(shows(w, '12226V')).toBe(true)
+  })
+})

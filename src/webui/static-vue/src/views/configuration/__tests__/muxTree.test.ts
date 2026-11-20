@@ -12,6 +12,8 @@ import {
   countMuxes,
   exactMatch,
   expandableKeys,
+  filterTree,
+  muxSearchText,
   muxTypeName,
   scanQueued,
   scanResultName,
@@ -168,6 +170,29 @@ describe('services', () => {
     ])
     expect(m.get('a')?.map((s) => s.svcname)).toEqual(['ORF1', 'ORF2'])
     expect(m.get('b')?.length).toBe(1)
+  })
+})
+
+describe('filterTree', () => {
+  const tree = buildMuxTree([
+    { uuid: 't', name: '10717V', multistream: true, pnetwork_name: 'Thor', delsys: 'DVB-S2' },
+    { uuid: 'r', name: '10717V ISI 171', parent_mux: 't', tstype: MUX_TYPE_ISI, stream_id: 171, pnetwork_name: 'Riks' },
+    { uuid: 'n', name: '10717V ISI 172', parent_mux: 't', tstype: MUX_TYPE_ISI, stream_id: 172 },
+    { uuid: 'o', name: '11034V' },
+  ])
+  const text = (q: string) => (n: MuxTreeNode) => muxSearchText(n).includes(q)
+
+  it('shows a match with the nodes above it opened', () => {
+    const f = filterTree(tree, text('riks'))
+    expect([...f.show].sort()).toEqual(['r', 't'])
+    expect(f.open.has('t')).toBe(true)
+    expect(f.self.has('r')).toBe(true)
+    expect(f.show.has('o')).toBe(false)
+  })
+
+  it('finds a mux by its type and tuning', () => {
+    expect(filterTree(tree, text('ts (isi)')).self.size).toBe(2)
+    expect([...filterTree(tree, text('dvb-s2')).self]).toEqual(['t'])
   })
 })
 
