@@ -55,6 +55,8 @@ export interface MuxRow {
   /* Hz, or kHz for satellite muxes (see muxFrequency.ts) */
   frequency?: number
   polarisation?: string
+  /* a GSE stream (Neumo driver): what it carried at its last scan, one line */
+  gse_content?: string
   [key: string]: unknown
 }
 
@@ -65,7 +67,7 @@ export const MUX_FIELDS = [
   'dab_ip', 'dab_port', 'dab_pmt_sid',
   'pnetwork_name', 'delsys', 'modulation', 'constellation', 'fec', 'symbolrate', 'rolloff', 'pilot',
   'pls_mode', 'pls_code', 'bandwidth', 'scan_result', 'scan_state', 'num_svc', 'num_chn', 'enabled',
-  'frequency', 'polarisation',
+  'frequency', 'polarisation', 'gse_content',
 ].join(',')
 
 export interface MuxTreeNode {
