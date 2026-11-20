@@ -39,6 +39,8 @@
 
 static void
 dvb_mux_delete ( mpegts_mux_t *mm, int delconf );
+static int
+dvb_mux_is_epg ( mpegts_mux_t *mm );
 
 extern const idclass_t mpegts_mux_class;
 
@@ -1796,7 +1798,7 @@ dvb_mux_pid_carrier_ok ( mpegts_mux_t *mm )
 {
   dvb_mux_t *p;
 
-  if (!idnode_is_instance(&mm->mm_id, &dvb_mux_class) || ((dvb_mux_t *)mm)->lm_multistream)
+  if (!idnode_is_instance(&mm->mm_id, &dvb_mux_class) || !mpegts_mux_has_own_ts(mm))
     return 0;
   if (!mpegts_mux_is_submux(mm))
     return 1;
@@ -2316,6 +2318,7 @@ dvb_mux_create0
   lm->mm_free             = dvb_mux_free;
   lm->mm_display_name     = dvb_mux_display_name;
   lm->mm_config_save      = dvb_mux_config_save;
+  lm->mm_is_epg           = dvb_mux_is_epg;
 
   mpegts_mux_update_nice_name(mm);
   /* another ensemble of its name gets its address */
@@ -2599,7 +2602,47 @@ dvb_mux_add_stream
 }
 
 /*
- * A multistream transponder no tuner takes as a whole. Its input streams
+ * A multistream transponder has no TS of its own: the services it got
+ * (before it became one, or from the stream the demodulator chose when
+ * its tables were read) are those of its input streams. The ones without
+ * a channel go, the others stay until their channel has the service of
+ * the input stream; the provider network name goes too (global_lock,
+ * after the channels are loaded).
+ */
+void
+dvb_mux_transponder_drop_services ( dvb_mux_t *lm )
+{
+  mpegts_mux_t *mm = (mpegts_mux_t *)lm;
+  mpegts_service_t *s, *n;
+  int dropped = 0, kept = 0;
+
+  if (!lm->lm_multistream)
+    return;
+  for (s = LIST_FIRST(&mm->mm_services); s; s = n) {
+    n = LIST_NEXT(s, s_dvb_mux_link);
+    if (LIST_FIRST(&s->s_channels)) {
+      if (kept++ == 0)
+        tvhwarn(LS_MPEGTS, "%s - service %s is mapped to a channel: map the one of "
+                "the input stream instead", mm->mm_nicename, s->s_dvb_svcname ?: "?");
+      continue;
+    }
+    service_destroy((service_t *)s, 1);
+    dropped++;
+  }
+  if (dropped || kept)
+    tvhinfo(LS_MPEGTS, "%s - multistream transponder: %d service(s) removed, %d kept "
+            "(mapped)", mm->mm_nicename, dropped, kept);
+  /* the provider network name from that stream's NIT goes with them */
+  if (mm->mm_provider_network_name) {
+    free(mm->mm_provider_network_name);
+    mm->mm_provider_network_name = NULL;
+    idnode_changed(&mm->mm_id);
+  }
+}
+
+/*
+ * A multistream transponder no tuner takes as a whole: none delivers its
+ * input streams in BBFrames (without the Neumo driver). Its input streams
  * tune themselves, so a scan of the transponder is a scan of theirs, and
  * its scan result follows from them.
  */
@@ -2613,7 +2656,7 @@ dvb_mux_transponder_by_streams ( mpegts_mux_t *mm )
   return LIST_EMPTY(&mm->mm_instances);
 }
 
-/* an input stream of the transponder */
+/* an input stream of the transponder, or what one carries (DAB in GSE) */
 static int
 dvb_mux_transponder_stream ( mpegts_mux_t *mm, mpegts_mux_t *sm )
 {
@@ -2724,6 +2767,13 @@ dvb_mux_dab_pmt_pids ( mpegts_mux_t *mm, const uint16_t *pids, int n, uint16_t s
     lm->lm_dab_pmt_sid = asid;
     idnode_changed(&sm->mm_id);
   }
+}
+
+/* a multistream transponder has no EPG of its own */
+static int
+dvb_mux_is_epg ( mpegts_mux_t *mm )
+{
+  return ((dvb_mux_t *)mm)->lm_multistream ? MM_EPG_DISABLE : mm->mm_epg;
 }
 
 void

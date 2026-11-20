@@ -95,7 +95,7 @@ typedef struct dvb_mux
 
   /*
    * A multistream transponder (DVB-S2): it has the tuning, its input
-   * streams are its sub-muxes (MM_TYPE_ISI)
+   * streams are its sub-muxes (MM_TYPE_ISI, GSE); it has no services
    */
   int lm_multistream;
   /*
@@ -238,6 +238,7 @@ void       dvb_network_link_multistream ( dvb_network_t *ln );
 dvb_mux_t *dvb_mux_add_stream
   ( dvb_mux_t *lm, int stream, int force, const char **err, int *services );
 dvb_mux_t *dvb_mux_multistream_transponder ( dvb_network_t *ln, const dvb_mux_t *lm );
+void       dvb_mux_transponder_drop_services ( dvb_mux_t *lm );
 /* a multistream transponder no tuner takes as a whole: scanned by its streams */
 int        dvb_mux_transponder_by_streams ( mpegts_mux_t *mm );
 void       dvb_mux_transponder_result ( mpegts_mux_t *mm );
