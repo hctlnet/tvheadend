@@ -35,6 +35,7 @@
 #include "streaming.h"
 #include "profile.h"
 #include "input/mpegts/mpegts_dvb.h"
+#include "input/mpegts/mpegts_network_scan.h"
 #include "input/mpegts/t2mi.h"
 
 /* bytes the queue of a sub-mux takes before it drops (the parent's tuner
@@ -43,6 +44,7 @@
 
 typedef struct mpegts_submux {
   mpegts_mux_instance_t *sm_mmi;
+  int                    sm_pid_svc; /* no PID of its own: the carrier stream */
   th_subscription_t     *sm_sub;    /* raw subscription on the parent */
   profile_chain_t        sm_prch;
   streaming_queue_t      sm_sq;
@@ -50,12 +52,15 @@ typedef struct mpegts_submux {
   char                   sm_name[256]; /* its name at the start, for the thread */
   int                    sm_run;    /* atomic */
   uint16_t               sm_pid;    /* the parent's PID the sub-mux is in */
+  uint16_t               sm_sid;    /* the parent's service it is in (descrambled) */
   sbuf_t                 sm_in;     /* packets of that PID */
   t2mi_t                *sm_t2mi;   /* T2MI: the TS out of the PID */
   sbuf_t                 sm_out;    /* its TS */
   int                    sm_cc;     /* the continuity counter of the PID */
   uint64_t               sm_packets;
   uint64_t               sm_cc_gaps;  /* packets lost before the sub-mux thread */
+  uint64_t               sm_scrambled; /* packets still scrambled (no key) */
+  uint64_t               sm_clear;  /* packets passed on */
 } mpegts_submux_t;
 
 extern const idclass_t mpegts_input_class;
@@ -92,6 +97,18 @@ submux_parent ( mpegts_mux_t *mm )
  * The stream of a sub-mux
  * *************************************************************************/
 
+/* the carrier stream of a service (a T2-MI stream) */
+static uint16_t
+submux_carrier_pid ( const streaming_start_t *ss )
+{
+  int i;
+
+  for (i = 0; i < ss->ss_num_components; i++)
+    if (ss->ss_components[i].es_type == SCT_T2MI)
+      return ss->ss_components[i].es_pid;
+  return 0;
+}
+
 static void
 submux_ts_out ( void *opaque, const uint8_t *ts )
 {
@@ -101,13 +118,16 @@ submux_ts_out ( void *opaque, const uint8_t *ts )
 }
 
 /* a packet of the PID of the parent: its continuity tells packets lost on
- * the way (tuner, queue) */
+ * the way (tuner, queue); one still scrambled (the descrambler has no key
+ * for the carrier) is not passed on; none before the carrier service named
+ * its carrier stream */
 static int
 submux_packet ( mpegts_submux_t *sm, const uint8_t *data )
 {
   int cc;
 
-  if (data[0] != 0x47 || (((data[1] & 0x1f) << 8) | data[2]) != sm->sm_pid)
+  if (sm->sm_pid == 0 ||
+      data[0] != 0x47 || (((data[1] & 0x1f) << 8) | data[2]) != sm->sm_pid)
     return 0;
   sm->sm_packets++;
   if (data[3] & 0x10) {
@@ -116,6 +136,11 @@ submux_packet ( mpegts_submux_t *sm, const uint8_t *data )
       sm->sm_cc_gaps++;
     sm->sm_cc = cc;
   }
+  if (data[3] & 0xc0) {
+    sm->sm_scrambled++;
+    return 0;
+  }
+  sm->sm_clear++;
   return 1;
 }
 
@@ -158,6 +183,7 @@ submux_process ( mpegts_submux_t *sm, streaming_message_t *msg )
   mpegts_mux_instance_t *mmi = sm->sm_mmi;
   const uint8_t *data;
   size_t len;
+  uint16_t pid;
 
   switch (msg->sm_type) {
   case SMT_MPEGTS:
@@ -175,6 +201,16 @@ submux_process ( mpegts_submux_t *sm, streaming_message_t *msg )
       mpegts_input_recv_packets(mmi, &sm->sm_in, MPEGTS_DATA_DECAPSULATED, NULL);
     break;
   case SMT_START:
+    /* a carrier service: its carrier stream, when the sub-mux has no PID -
+     * at every start, a new PMT may move it (the parser of the stream syncs
+     * again: the packets of the new PID do not go on those of the old) */
+    if (sm->sm_pid_svc) {
+      pid = submux_carrier_pid(msg->sm_data);
+      if (sm->sm_pid && pid != sm->sm_pid)
+        tvhinfo(LS_MPEGTS, "%s - carrier stream moved from PID 0x%04x to 0x%04x",
+                sm->sm_name, sm->sm_pid, pid);
+      sm->sm_pid = pid;
+    }
     tvhdebug(LS_MPEGTS, "%s - transponder delivers (PID 0x%04x)",
              sm->sm_name, sm->sm_pid);
     break;
@@ -260,6 +296,10 @@ submux_free ( mpegts_submux_t *sm )
     pthread_join(sm->sm_thread, NULL);
   }
   streaming_queue_deinit(&sm->sm_sq);
+  if (sm->sm_scrambled)
+    tvhlog(sm->sm_clear ? LOG_DEBUG : LOG_WARNING, LS_MPEGTS,
+           "%s - %"PRIu64" packets of the carrier still scrambled, %"PRIu64" clear",
+           sm->sm_mmi->mmi_mux->mm_nicename, sm->sm_scrambled, sm->sm_clear);
   if (sm->sm_t2mi) {
     submux_t2mi_end(sm);
     t2mi_done(sm->sm_t2mi);
@@ -429,7 +469,9 @@ submux_input_display_name ( mpegts_input_t *mi, char *buf, size_t len )
   snprintf(buf, len, "Sub-mux");
 }
 
-/* the subscription on the parent, for the PID of the sub-mux. It starts now
+/* the subscription on the parent: for the PID of the sub-mux, or for the
+ * carrier service (it goes through the descrambler; "no access" keeps it
+ * up - an empty sub-mux, not a retry every few seconds). It starts now
  * (ONESHOT: as a new one it would wait for the next run of the scheduler, up
  * to 2 seconds), then it is one like the others: it moves to another tuner
  * when it loses its own. It has the flags of the client that starts the
@@ -437,7 +479,7 @@ submux_input_display_name ( mpegts_input_t *mi, char *buf, size_t len )
  * it as they do for that client. */
 static th_subscription_t *
 submux_subscribe ( mpegts_submux_t *sm, mpegts_mux_t *mm, mpegts_mux_t *parent,
-                   int weight, int *error )
+                   mpegts_service_t *svc, int weight, int *error )
 {
   const int flags = SUBSCRIPTION_MPEGTS | SUBSCRIPTION_ONESHOT |
                     (sm->sm_mmi->mmi_start_flags & SUBMUX_CLIENT_FLAGS);
@@ -446,14 +488,21 @@ submux_subscribe ( mpegts_submux_t *sm, mpegts_mux_t *mm, mpegts_mux_t *parent,
   mpegts_apids_t pids;
   int r;
 
-  profile_chain_init(&sm->sm_prch, NULL, parent, 0);
+  profile_chain_init(&sm->sm_prch, NULL, svc ? (void *)svc : (void *)parent, 0);
   sm->sm_prch.prch_st = &sm->sm_sq.sq_st;
   sm->sm_prch.prch_flags = SUBSCRIPTION_MPEGTS;
-  ths = subscription_create_from_mux(&sm->sm_prch, NULL, weight, "sub-mux", flags,
-                                     NULL, NULL, mm->mm_nicename, error);
+  if (svc)
+    ths = subscription_create_from_service(&sm->sm_prch, NULL, weight, "sub-mux",
+                                           flags | SUBSCRIPTION_CONTACCESS,
+                                           NULL, NULL, mm->mm_nicename, error);
+  else
+    ths = subscription_create_from_mux(&sm->sm_prch, NULL, weight, "sub-mux", flags,
+                                       NULL, NULL, mm->mm_nicename, error);
   if (ths == NULL)
     return NULL;
   ths->ths_flags &= ~SUBSCRIPTION_ONESHOT;
+  if (svc)
+    return ths;
   ms = (mpegts_service_t *)ths->ths_service;
   mpegts_pid_init(&pids);
   mpegts_pid_add(&pids, sm->sm_pid, MPS_WEIGHT_RAW);
@@ -466,12 +515,29 @@ submux_subscribe ( mpegts_submux_t *sm, mpegts_mux_t *mm, mpegts_mux_t *parent,
   return ths;
 }
 
+/* the carrier service of a sub-mux; NULL: none, the PID only */
+static mpegts_service_t *
+submux_carrier ( mpegts_mux_t *mm, mpegts_mux_t *parent, uint16_t pid )
+{
+  uint16_t sid = ((dvb_mux_t *)mm)->lm_carrier_sid;
+  mpegts_service_t *svc;
+
+  if (parent == NULL || sid == 0)
+    return NULL;
+  svc = mpegts_service_find(parent, sid, 0, 0, NULL);
+  if (svc == NULL)
+    tvhwarn(LS_MPEGTS, "%s - carrier service %d not found on %s%s", mm->mm_nicename,
+            sid, parent->mm_nicename, pid ? ", only the PID (not descrambled)" : "");
+  return svc;
+}
+
 static int
 submux_input_start_mux ( mpegts_input_t *mi, mpegts_mux_instance_t *mmi, int weight )
 {
   mpegts_mux_t *mm = mmi->mmi_mux;
   mpegts_mux_t *parent;
   mpegts_submux_t *sm;
+  mpegts_service_t *svc;
   uint16_t pid;
   int r;
   int error = 0;
@@ -482,7 +548,8 @@ submux_input_start_mux ( mpegts_input_t *mi, mpegts_mux_instance_t *mmi, int wei
     return 0;
   parent = submux_parent(mm);
   pid = dvb_mux_stream_pid(mm);
-  if (parent == NULL || pid == 0) {
+  svc = submux_carrier(mm, parent, pid);
+  if (parent == NULL || (pid == 0 && svc == NULL)) {
     tvherror(LS_MPEGTS, "%s - %s", mm->mm_nicename,
              parent ? "no PID of the transponder" : "transponder not found");
     return SM_CODE_TUNING_FAILED;
@@ -493,7 +560,9 @@ submux_input_start_mux ( mpegts_input_t *mi, mpegts_mux_instance_t *mmi, int wei
    * mm_nicename is freed then */
   strlcpy(sm->sm_name, mm->mm_nicename ?: "", sizeof(sm->sm_name));
   sm->sm_mmi = mmi;
+  sm->sm_pid_svc = pid == 0;
   sm->sm_pid = pid;
+  sm->sm_sid = svc ? service_id16(svc) : 0;
   sm->sm_cc = -1;
   sbuf_init(&sm->sm_in);
   sbuf_init(&sm->sm_out);
@@ -513,7 +582,7 @@ submux_input_start_mux ( mpegts_input_t *mi, mpegts_mux_instance_t *mmi, int wei
   }
   mmi->mmi_submux = sm;
 
-  sm->sm_sub = submux_subscribe(sm, mm, parent, weight > 0 ? weight : 10, &error);
+  sm->sm_sub = submux_subscribe(sm, mm, parent, svc, weight > 0 ? weight : 10, &error);
   r = sm->sm_sub == NULL;
   if (r) {
     tvhdebug(LS_MPEGTS, "%s - cannot subscribe to the transponder %s (%s)",
@@ -523,8 +592,8 @@ submux_input_start_mux ( mpegts_input_t *mi, mpegts_mux_instance_t *mmi, int wei
     submux_free(sm);
     return error ?: SM_CODE_TUNING_FAILED;
   }
-  tvhdebug(LS_MPEGTS, "%s - from PID 0x%04x of %s", mm->mm_nicename,
-           pid, parent->mm_nicename);
+  tvhdebug(LS_MPEGTS, "%s - from PID 0x%04x of %s (service %d, 0: raw)", mm->mm_nicename,
+           pid, parent->mm_nicename, sm->sm_sid);
 
   /* the tables of the sub-mux open their PIDs before the stream comes */
   mm->mm_active = mmi;
@@ -536,11 +605,18 @@ static void
 submux_input_stop_mux ( mpegts_input_t *mi, mpegts_mux_instance_t *mmi )
 {
   mpegts_submux_t *sm = mmi->mmi_submux;
+  mpegts_mux_t *parent;
 
   if (sm == NULL)
     return;
   mmi->mmi_submux = NULL;
   submux_free(sm);
+  /* the parent's tuner may be free now: the scan of its network goes on at
+   * once, not at its next timer */
+  parent = submux_parent(mmi->mmi_mux);
+  if (parent && parent->mm_network)
+    mtimer_arm_rel(&parent->mm_network->mn_scan_timer, mpegts_network_scan_timer_cb,
+                   parent->mm_network, 0);
 }
 
 static void

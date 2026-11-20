@@ -51,6 +51,12 @@ typedef struct dvb_mux
   char *lm_parent;
 
   /*
+   * A sub-mux: the service of the transponder it is carried in; the stream
+   * then goes through the descrambler (0: the PID only, not scrambled)
+   */
+  uint16_t lm_carrier_sid;
+
+  /*
    * T2MI: the format of the PID (t2mi.h; auto: detected)
    */
   int lm_t2mi_format;
