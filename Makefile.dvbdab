@@ -104,8 +104,21 @@ $(LIB_ROOT)/$(PUGIXML)/.tvh_build: \
 #
 # libdvbdab
 #
-# DAB+ transcoding (faad2 and libavcodec) is not built in here
+# DAB+ transcoding (configure: dvbdab_transcode): with faad2 and the
+# libavcodec tvheadend is built with - the static FFmpeg, which pkg-config
+# finds through support/pkg-config.ffmpeg, or the installed one
 #
+
+ifeq ($(CONFIG_DVBDAB_TRANSCODE),yes)
+DVBDAB_TRANSCODE := ON
+else
+DVBDAB_TRANSCODE := OFF
+endif
+
+ifeq ($(CONFIG_DVBDAB_TRANSCODE)$(CONFIG_FFMPEG_STATIC),yesyes)
+DVBDAB_PKG_CONFIG := FFMPEG_PREFIX="$(BUILDDIR)/ffmpeg/build/ffmpeg"
+DVBDAB_CMAKE_PKG  := -DPKG_CONFIG_EXECUTABLE="$(ROOTDIR)/support/pkg-config.ffmpeg"
+endif
 
 $(LIB_ROOT)/$(LIBDVBDAB)/.tvh_download:
 	$(call DOWNLOAD,$(LIBDVBDAB_URL),$(LIB_ROOT)/$(LIBDVBDAB_TB),$(LIBDVBDAB_SHA1))
@@ -117,9 +130,10 @@ $(LIB_ROOT)/$(LIBDVBDAB)/.tvh_build: \
 		$(LIB_ROOT)/$(LIBDVBDAB)/.tvh_download
 	cd $(LIB_ROOT)/$(LIBDVBDAB) && \
 		PKG_CONFIG_PATH="$(EPREFIX)/lib/pkgconfig:$$PKG_CONFIG_PATH" \
-		cmake $(CMAKE_OPTS) \
+		$(DVBDAB_PKG_CONFIG) \
+		cmake $(CMAKE_OPTS) $(DVBDAB_CMAKE_PKG) \
 		-DDVBDAB_WARNINGS=OFF \
-		-DDVBDAB_TRANSCODE=OFF \
+		-DDVBDAB_TRANSCODE=$(DVBDAB_TRANSCODE) \
 		-S . -B tvh-build
 	$(MAKE) -C $(LIB_ROOT)/$(LIBDVBDAB)/tvh-build dvbdab
 	cd $(LIB_ROOT)/$(LIBDVBDAB) && cmake --install tvh-build
