@@ -270,6 +270,10 @@ dvb_mux_class_type_list ( void *o, const char *lang )
     { N_("DAB-ETI"),                  MM_TYPE_DAB_ETI },
     { N_("DAB-TSNI"),                 MM_TYPE_DAB_TSNI },
 #endif
+#if ENABLE_LINUXDVB_NEUMO && ENABLE_DVBDAB
+    { N_("DAB-GSE"),                  MM_TYPE_DAB_GSE },
+    { N_("GSE"),                      MM_TYPE_GSE },
+#endif
   };
   (void) o;
   return strtab2htsmsg(tab, 1, lang);
@@ -1677,6 +1681,8 @@ dvb_mux_same_transponder ( const dvb_mux_conf_t *a, const dvb_mux_conf_t *b )
 uint16_t
 dvb_mux_stream_pid ( mpegts_mux_t *mm )
 {
+  if (mpegts_mux_in_bbframes(mm))
+    return DVB_BBFRAMES_PID;
   if (!mpegts_mux_in_pid(mm))
     return 0;
   return ((dvb_mux_t *)mm)->lm_tuning.dmc_fe_pid;
@@ -2051,7 +2057,7 @@ dvb_mux_submux_name ( mpegts_mux_t *mm, char *buf, size_t len )
     return;
   buf += l;
   len -= l;
-  if (mm->mm_type == MM_TYPE_ISI) {
+  if (mm->mm_type == MM_TYPE_ISI || mm->mm_type == MM_TYPE_GSE) {
     snprintf(buf, len, " ISI %d", dmc->dmc_fe_stream_id);
   } else if (mm->mm_type == MM_TYPE_T2MI) {
     if (dmc->dmc_t2mi_plp_set)
@@ -2196,7 +2202,7 @@ dvb_mux_delete ( mpegts_mux_t *mm, int delconf )
   }
 
   /* the transponder of an input stream that goes for good */
-  if (delconf && mm->mm_type == MM_TYPE_ISI)
+  if (delconf && (mm->mm_type == MM_TYPE_ISI || mm->mm_type == MM_TYPE_GSE))
     t = dvb_mux_submux_parent((dvb_mux_t *)mm);
 
   /* Delete the mux (the strings stay for its last save, see dvb_mux_free) */
@@ -2354,9 +2360,9 @@ dvb_mux_create0
  * Multistream transponders: the input streams of a DVB-S2 transponder are its
  * sub-muxes. Muxes of input streams from before (each with the whole tuning,
  * one per stream) get their transponder: the mux of the transponder without
- * a stream, made if there is none. A transponder is a multistream one with
- * two input streams at least - one stream set by hand for a single stream
- * transponder stays a mux of its own.
+ * a stream, made if there is none. A transponder is a multistream one with an
+ * input stream that is not TS (GSE), or with two TS streams at least - one
+ * stream set by hand for a single stream transponder stays a mux of its own.
  */
 
 /* a mux of an input stream, not yet in a multistream transponder */
@@ -2390,7 +2396,8 @@ dvb_mux_has_streams ( dvb_network_t *ln, dvb_mux_t *lm )
     if (lm2->lm_tuning.dmc_fe_stream_id == DVB_NO_STREAM_ID_FILTER ||
         !dvb_mux_same_frequency(&lm2->lm_tuning, &lm->lm_tuning))
       continue;
-    if (mm->mm_type == MM_TYPE_ISI)
+    if (mm->mm_type == MM_TYPE_GSE || mm->mm_type == MM_TYPE_DAB_GSE ||
+        mm->mm_type == MM_TYPE_ISI)
       return 1;
     if (mm->mm_type != MM_TYPE_TS)
       continue;
@@ -2402,9 +2409,9 @@ dvb_mux_has_streams ( dvb_network_t *ln, dvb_mux_t *lm )
 }
 
 /* a mux of the frequency of lm without a stream set, as the transponder of
- * lm: 3 the transponder there is, 2 an enabled mux, 1 a disabled one, 0
- * none - never one set to ignore (another description of the transponder in
- * a NIT, or the user's choice) */
+ * lm: 4 lm itself (the scanned one), 3 the transponder there is, 2 an
+ * enabled mux, 1 a disabled one, 0 none - never one set to ignore (another
+ * description of the transponder in a NIT, or the user's choice) */
 static int
 dvb_mux_transponder_rank ( const dvb_mux_t *t, const dvb_mux_t *lm )
 {
@@ -2414,6 +2421,8 @@ dvb_mux_transponder_rank ( const dvb_mux_t *t, const dvb_mux_t *lm )
       t->lm_tuning.dmc_fe_stream_id != DVB_NO_STREAM_ID_FILTER ||
       !dvb_mux_same_frequency(&t->lm_tuning, &lm->lm_tuning))
     return 0;
+  if (t == lm)
+    return 4;
   if (t->lm_multistream)
     return 3;
   return mm->mm_enabled == MM_ENABLE ? 2 : 1;
@@ -2451,7 +2460,8 @@ dvb_mux_multistream_transponder ( dvb_network_t *ln, const dvb_mux_t *lm )
     dmc.dmc_dab_ip = 0;
     dmc.dmc_dab_port = 0;
     /* not queued for a scan (mpegts_mux_post_create()): its input streams
-     * are there and scanned, and no tuner takes the transponder itself */
+     * are there and scanned, and without a tuner that delivers BBFrames no
+     * tuner takes the transponder itself */
     t = dvb_mux_create0(ln, MPEGTS_ONID_NONE, MPEGTS_TSID_NONE, &dmc, NULL, NULL);
     if (t == NULL)
       return NULL;
@@ -2551,7 +2561,8 @@ dvb_mux_add_stream
     if (l == t || l->lm_tuning.dmc_fe_stream_id != stream ||
         !dvb_mux_same_frequency(&l->lm_tuning, &t->lm_tuning))
       continue;
-    if (m->mm_type == MM_TYPE_ISI && dvb_mux_submux_parent(l) == t) {
+    if ((m->mm_type == MM_TYPE_ISI || m->mm_type == MM_TYPE_GSE) &&
+        dvb_mux_submux_parent(l) == t) {
       *err = "the transponder has this input stream";
       return NULL;
     }

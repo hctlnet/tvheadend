@@ -301,7 +301,7 @@ mpegts_network_scan_mux_done0
   int scan_weight = mm->mm_scan_weight;   /* of the scan that ends */
 #endif
   mpegts_mux_scan_state_t state = mm->mm_scan_state;
-  int dab_found;
+  int dab_found = 0;
 
   /* The DAB data come slower than the tables of a scan: a scan that ended
    * (not a cancelled one) waits for the probe, for a while at most */
@@ -313,10 +313,14 @@ mpegts_network_scan_mux_done0
    * or its tuner taken), the mux may be going away */
   dab_found = mpegts_dab_probe_complete(mm, result != MM_SCAN_NONE);
 
-  /* Override result if the probe found DAB ensembles */
+  /* Complete ISI probe (a multistream transponder: its streams) */
+  dab_found += mpegts_isi_probe_complete(mm, result != MM_SCAN_NONE);
+
+  /* Override result if a probe found content (DAB, input streams) */
   if (dab_found > 0 && result == MM_SCAN_FAIL) {
     result = MM_SCAN_OK;
-    tvhinfo(LS_MPEGTS, "mux %s: scan result upgraded to OK (DAB found)", mm->mm_nicename);
+    tvhinfo(LS_MPEGTS, "mux %s: scan result upgraded to OK (DAB or input streams found)",
+            mm->mm_nicename);
   }
 
   /* a sub-mux of it was read while this scan ran */
@@ -466,6 +470,9 @@ mpegts_network_scan_mux_active ( mpegts_mux_t *mm )
 
   /* Start DAB probe in parallel with SI scanning */
   mpegts_dab_probe_start(mm);
+
+  /* Start ISI probe (no-op if not DVB-S2 with Neumo driver) */
+  mpegts_isi_probe_start(mm);
 }
 
 /* Mux has been reactivated */

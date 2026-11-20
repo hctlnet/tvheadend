@@ -494,6 +494,9 @@ SRCS-IPTV = \
 SRCS-${CONFIG_IPTV} += $(SRCS-IPTV)
 I18N-C += $(SRCS-IPTV)
 
+# ISI probe (multistream detection, Neumo driver; reads linuxdvb frontends)
+SRCS-${CONFIG_LINUXDVB} += src/input/mpegts/dab/isi_probe.c
+
 # DAB (Digital Audio Broadcasting) in DVB muxes - libdvbdab
 # (configure: dvbdab, flags come from pkg-config)
 SRCS-DAB = \
