@@ -15,6 +15,8 @@ import {
   filterTree,
   muxSearchText,
   muxTypeName,
+  parseAddress,
+  parsePid,
   scanEnabled,
   scanPending,
   scanQueued,
@@ -132,6 +134,23 @@ describe('shortName', () => {
     expect(shortName('12226V', '12226V')).toBe('12226V')
     expect(shortName('12226V ISI 14', undefined)).toBe('12226V ISI 14')
     expect(shortName('11727V ISI 1', '12226V')).toBe('11727V ISI 1')
+  })
+})
+
+describe('parseAddress / parsePid', () => {
+  it('takes an IPv4 address with octets up to 255 and a port 1 to 65535', () => {
+    expect(parseAddress('239.1.2.3')).toEqual({ ip: '239.1.2.3', port: 0 })
+    expect(parseAddress(' 239.1.2.3:5000 ')).toEqual({ ip: '239.1.2.3', port: 5000 })
+    expect(parseAddress('239.001.2.3:65535')).toEqual({ ip: '239.1.2.3', port: 65535 })
+    for (const bad of ['300.1.2.3', '239.1.2.256', '239.1.2.3:99999', '239.1.2.3:0', '239.1.2', 'a.b.c.d', '239.1.2.3:'])
+      expect(parseAddress(bad), bad).toBeNull()
+  })
+
+  it('takes a PID 1 to 0x1FFE, decimal or hex', () => {
+    expect(parsePid('4096')).toBe(4096)
+    expect(parsePid('0x1000')).toBe(4096)
+    expect(parsePid('0X1FFE')).toBe(0x1ffe)
+    for (const bad of ['0', '8191', '0x1fff', '-1', '12a', '', '1.5']) expect(parsePid(bad), bad).toBeNull()
   })
 })
 

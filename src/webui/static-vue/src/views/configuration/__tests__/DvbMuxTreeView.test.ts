@@ -283,8 +283,9 @@ describe('DvbMuxTreeView T2MI', () => {
     await expand(w, 'Astra (3)')
     const row = rowOf(w, 'T2MI 4096')
     expect(row.text()).toMatch(/^T2MI 4096\s*T2MI/)
-    expect(row.find('.mux-tree__sid').text()).toBe('800')
-    expect(row.find('.mux-tree__sid').attributes('title')).toBe('Carrier service: SID 800')
+    expect(row.findAll('td.mux-tree__num')[0].text()).toBe('4096')
+    expect(row.find('.mux-tree__address').text()).toBe('SID 800')
+    expect(row.find('.mux-tree__address').attributes('title')).toBe('Carrier service: SID 800')
     expect(row.find('.mux-tree__lock').exists()).toBe(false)
     expect(String(calls('mpegts/mux/grid')[0].list).split(',')).toEqual(
       expect.arrayContaining(['pid', 'carrier_sid']),
@@ -297,8 +298,8 @@ describe('DvbMuxTreeView T2MI', () => {
     const w = await mountTree(s)
     await expand(w, 'Astra (3)')
     await expand(w, 'Services (1)')
-    const cell = rowOf(w, 'T2MI 4096').find('.mux-tree__sid')
-    expect(cell.text()).toBe('800 · MX')
+    const cell = rowOf(w, 'T2MI 4096').find('.mux-tree__address')
+    expect(cell.text()).toBe('SID 800 · MX')
     expect(cell.attributes('title')).toBe('Carrier service MX (SID 800), encrypted: 2600')
     expect(cell.find('.mux-tree__lock').exists()).toBe(true)
   })
@@ -323,12 +324,13 @@ describe('DvbMuxTreeView T2MI', () => {
     const row = rowOf(w, 'Antenne DE')
     expect(row.text()).toMatch(/^Antenne DE\s*DAB-MPE/)
     expect(row.find('.mux-tree__name').attributes('title')).toContain('239.128.72.10:50010')
-    const cell = row.find('.mux-tree__sid')
-    expect(cell.text()).toBe('4122')
+    const cell = row.find('.mux-tree__address')
+    expect(row.findAll('td.mux-tree__num')[0].text()).toBe('4122')
+    expect(cell.text()).toBe('239.128.72.10:50010 · SID 4122')
     expect(cell.attributes('title')).toBe('Announced by the service SID 4122')
     await expand(w, 'Services (1)')
-    expect(rowOf(w, 'Antenne DE').find('.mux-tree__sid').text()).toBe('4122 · DAB Data')
-    expect(rowOf(w, 'Antenne DE').find('.mux-tree__sid').attributes('title')).toBe(
+    expect(rowOf(w, 'Antenne DE').find('.mux-tree__address').text()).toBe('239.128.72.10:50010 · DAB Data')
+    expect(rowOf(w, 'Antenne DE').find('.mux-tree__address').attributes('title')).toBe(
       'Announced by the service DAB Data (SID 4122)',
     )
     expect(String(calls('mpegts/mux/grid')[0].list).split(',')).toEqual(
@@ -336,12 +338,17 @@ describe('DvbMuxTreeView T2MI', () => {
     )
   })
 
-  it('leaves the SID column of an input stream empty', async () => {
+  it('leaves the PID and Address columns of an input stream empty, and does not edit them', async () => {
     const s = server()
     multistream(s)
     const w = await mountTree(s)
     await expand(w, 'Astra (4)')
-    expect(rowOf(w, 'ISI 14').find('.mux-tree__sid').text()).toBe('')
+    const row = rowOf(w, 'ISI 14')
+    expect(row.find('.mux-tree__address').text()).toBe('')
+    expect(row.findAll('td.mux-tree__num')[0].text()).toBe('')
+    await row.find('.mux-tree__address').trigger('click')
+    await row.findAll('td.mux-tree__num')[0].trigger('click')
+    expect(rowOf(w, 'ISI 14').find('input.mux-tree__cell-input').exists()).toBe(false)
   })
 })
 
@@ -408,7 +415,7 @@ describe('DvbMuxTreeView services', () => {
     await expand(w, '11494H')
     const row = rowOf(w, 'Das Erste HD')
     expect(row.text()).toContain('HD TV')
-    expect(row.find('.mux-tree__sid').text()).toBe('10301 · 1830, 1843')
+    expect(row.find('.mux-tree__address').text()).toBe('SID 10301 · 1830, 1843')
     expect(row.find('.mux-tree__streams').text()).toBe('H.264 1080i, AC-3 deu')
     const svcList = String(calls('mpegts/service/grid')[0].list).split(',')
     expect(svcList).toEqual(expect.arrayContaining(['svcname', 'sid', 'multiplex_uuid', 'network', 'streams']))
@@ -538,6 +545,76 @@ describe('DvbMuxTreeView Reload', () => {
     await button(w, 'Reload').trigger('click')
     await flushPromises()
     expect(shows(w, 'Das Erste HD')).toBe(true)
+  })
+})
+
+describe('DvbMuxTreeView PID and address of a sub-mux, edited in the cell', () => {
+  async function mountSubMuxes(fail = false) {
+    const s = server()
+    s.muxes.push(
+      {
+        uuid: 't2', name: '11494H T2MI 4096', network: 'Astra', network_uuid: 'n1', parent_mux: 'm1', tstype: 1,
+        pid: 4096, num_svc: 0, num_chn: 0, scan_state: 0, enabled: 1,
+      },
+      {
+        uuid: 'd1', name: '11494H DAB-MPE', network: 'Astra', network_uuid: 'n1', parent_mux: 'm1', tstype: 2,
+        pid: 1001, dab_ip: '239.1.2.3', dab_port: 5000, num_svc: 0, num_chn: 0, scan_state: 0, enabled: 1,
+      },
+    )
+    const w = await mountTree(s)
+    await expand(w, 'Astra (1)')
+    if (fail) s.gate = (ep) => (ep === 'idnode/save' ? Promise.reject(new Error('session expired')) : undefined)
+    return w
+  }
+  const pidCell = (w: Wrapper) => rowOf(w, 'T2MI').findAll('td.mux-tree__num')[0]
+  const addrCell = (w: Wrapper) => rowOf(w, 'DAB-MPE').find('td.mux-tree__address')
+
+  async function type(cell: () => ReturnType<typeof pidCell>, text: string, key = 'Enter') {
+    await cell().trigger('click')
+    const input = cell().find('input')
+    await input.setValue(text)
+    await input.trigger('keydown', { key })
+    await flushPromises()
+  }
+
+  it('saves a PID typed in its cell, decimal or hex, and selects no row for it', async () => {
+    const w = await mountSubMuxes()
+    await type(() => pidCell(w), '0x1003')
+    expect(JSON.parse(String(calls('idnode/save')[0].node))).toEqual({ uuid: 't2', pid: 4099 })
+    expect(pidCell(w).text()).toBe('4099')
+    expect(rowOf(w, 'T2MI').classes()).not.toContain('mux-tree__row--selected')
+  })
+
+  it('leaves the PID as it is on Escape, and on a value that is none', async () => {
+    const w = await mountSubMuxes()
+    await type(() => pidCell(w), '4099', 'Escape')
+    await type(() => pidCell(w), '8191')
+    expect(calls('idnode/save')).toHaveLength(0)
+    expect(stubs.toast.warn).toHaveBeenCalledTimes(1)
+    expect(pidCell(w).text()).toBe('4096')
+  })
+
+  it('takes back a PID whose save fails, and says so', async () => {
+    const w = await mountSubMuxes(true)
+    await type(() => pidCell(w), '4099')
+    expect(pidCell(w).text()).toBe('4096')
+    expect(stubs.toast.error).toHaveBeenCalledWith('Failed to save: session expired')
+  })
+
+  it('saves an address in range', async () => {
+    const w = await mountSubMuxes()
+    await type(() => addrCell(w), '239.1.2.4:5001')
+    expect(JSON.parse(String(calls('idnode/save')[0].node))).toEqual({ uuid: 'd1', dab_ip: '239.1.2.4', dab_port: 5001 })
+    expect(addrCell(w).text()).toBe('239.1.2.4:5001')
+  })
+
+  it('saves no octet over 255 and no port over 65535, and says so', async () => {
+    const w = await mountSubMuxes()
+    await type(() => addrCell(w), '300.1.2.3')
+    await type(() => addrCell(w), '239.1.2.3:99999')
+    expect(calls('idnode/save')).toHaveLength(0)
+    expect(stubs.toast.warn).toHaveBeenCalledTimes(2)
+    expect(addrCell(w).text()).toBe('239.1.2.3:5000')
   })
 })
 
