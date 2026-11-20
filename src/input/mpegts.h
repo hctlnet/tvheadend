@@ -686,8 +686,27 @@ struct mpegts_mux_instance
   int             mmi_start_flags;
   int             mmi_tune_failed;
 
+  void           *mmi_decap;      /* decapsulation of a sub-mux (DAB), see below */
+  sbuf_t          mmi_decap_out;  /* its output: the TS of the sub-mux */
   void           *mmi_submux;     /* the sub-mux input's state (mpegts_submux.c) */
 };
+
+/*
+ * A DAB sub-mux is carried in a PID of its transponder. The sub-mux input
+ * (mpegts_submux.c) runs it from a raw subscription on the transponder, and
+ * the packets of the PID are turned into the transport stream of the sub-mux
+ * (mpegts_mux_decap_feed). The transponder keeps its tuner for its services
+ * and other sub-muxes.
+ */
+#if ENABLE_DVBDAB
+int  mpegts_mux_decap_start ( mpegts_mux_instance_t *mmi );
+void mpegts_mux_decap_stop  ( mpegts_mux_instance_t *mmi );
+void mpegts_mux_decap_feed  ( mpegts_mux_instance_t *mmi, sbuf_t *sb );
+#else
+#define mpegts_mux_decap_start(mmi)    (0)
+#define mpegts_mux_decap_stop(mmi)     ((void)0)
+#define mpegts_mux_decap_feed(mmi, sb) ((void)0)
+#endif
 
 struct mpegts_mux_sub
 {

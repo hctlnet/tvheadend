@@ -18,7 +18,8 @@
  */
 
 /*
- * A sub-mux carried in a PID of a transponder is not tuned itself.
+ * A sub-mux carried in a PID of a transponder (a T2-MI stream, a DAB
+ * ensemble) is not tuned itself.
  * The sub-mux input starts it with a raw subscription on its transponder, the
  * parent, for the PID the sub-mux is carried in. The stream of the sub-mux
  * is made of that PID on a thread of the sub-mux and goes into the normal
@@ -201,11 +202,16 @@ submux_process ( mpegts_submux_t *sm, streaming_message_t *msg )
       submux_t2mi_stream(sm, data, len);
       break;
     }
-    /* the packets of the PID are the stream */
+    /* the packets of the PID: for the decapsulation (DAB), else they are
+     * the stream */
     for ( ; len >= 188; data += 188, len -= 188)
       if (submux_packet(sm, data))
         sbuf_append(&sm->sm_in, data, 188);
-    if (sm->sm_in.sb_ptr > 0)
+    if (sm->sm_in.sb_ptr == 0)
+      break;
+    if (mmi->mmi_decap)
+      mpegts_mux_decap_feed(mmi, &sm->sm_in);
+    else
       mpegts_input_recv_packets(mmi, &sm->sm_in, MPEGTS_DATA_DECAPSULATED, NULL);
     break;
   case SMT_START:
@@ -703,6 +709,10 @@ mpegts_submux_init ( void )
     return;
   mi->mi_enabled       = 1;
   mi->mi_mux_types     = 1u << MM_TYPE_T2MI;
+#if ENABLE_DVBDAB
+  mi->mi_mux_types    |= (1u << MM_TYPE_DAB_MPE) | (1u << MM_TYPE_DAB_ETI) |
+                         (1u << MM_TYPE_DAB_TSNI);
+#endif
   mi->mi_is_enabled    = submux_input_is_enabled;
   mi->mi_get_weight    = submux_input_get_weight;
   mi->mi_warm_mux      = submux_input_warm_mux;
