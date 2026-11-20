@@ -262,6 +262,9 @@ const cols: ColumnDef[] = [
     phoneRole: 'primary',
     editable: true,
   },
+  /* Read only, computed by the server (mpegts_service.c): the type as
+   * clients get it (SDTV, HDTV, UHDTV, Radio, Other). */
+  { field: 'type', sortable: true, filterType: 'string', width: 100 },
 
   /* ---- remaining service_class (parent) ---- */
   {

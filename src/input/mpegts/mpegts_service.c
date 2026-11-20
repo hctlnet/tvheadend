@@ -128,6 +128,15 @@ mpegts_service_class_load(struct idnode *self, htsmsg_t *c)
                                 : EIT_PROCESSING_DEFAULT;
 }
 
+/* read only, for the service grids: the type as clients get it */
+static const void *
+mpegts_service_class_get_type ( void *ptr )
+{
+  static const char *s;
+  s = service_servicetype_txt((service_t *)ptr);
+  return &s;
+}
+
 CLASS_DOC(mpegts_service)
 PROP_DOC(eit_processing)
 
@@ -211,6 +220,15 @@ const idclass_t mpegts_service_class =
       .desc     = N_("The service name as set by the provider."),
       .opts     = PO_RDONLY,
       .off      = offsetof(mpegts_service_t, s_dvb_svcname),
+    },
+    {
+      .type     = PT_STR,
+      .id       = "type",
+      .name     = N_("Type"),
+      .desc     = N_("The type of the service: SD, HD, UHD TV, radio or "
+                     "other (as clients get it)."),
+      .opts     = PO_RDONLY | PO_NOSAVE,
+      .get      = mpegts_service_class_get_type,
     },
     {
       .type     = PT_STR,
