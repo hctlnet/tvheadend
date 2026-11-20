@@ -485,6 +485,9 @@ mpegts_mux_class_enabled_notify ( void *p, const char *lang )
       mm->mm_scan_result = MM_SCAN_IGNORE;
     }
   }
+#if ENABLE_DVBBUFFER
+  dvbbuffer_mux_enabled_notify();
+#endif
 }
 
 static htsmsg_t *

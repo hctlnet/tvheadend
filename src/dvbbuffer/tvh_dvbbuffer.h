@@ -59,6 +59,8 @@ void dvbbuffer_mux_backlog(struct mpegts_mux *mm, dvbbuffer_span_t *sp,
 /* mux property "prebuffer" changed, global_lock held */
 void dvbbuffer_mux_prebuffer_notify(void *p, const char *lang);
 
+/* a mux or network was enabled or disabled, global_lock held */
+void dvbbuffer_mux_enabled_notify(void);
 
 /* packets of one service's ring backlog at most (buffer_sec at 25 Mbit/s):
  * the descrambler queues that many until the first key, and those of 3 s

@@ -32,6 +32,13 @@ dvbbuffer_conf_fixup(void)
     dvbbuffer_conf.max_bitrate_kbps = 1000;
   if (dvbbuffer_conf.max_bitrate_kbps > 250000)  /* above any DVB transponder */
     dvbbuffer_conf.max_bitrate_kbps = 250000;
+  /* below the weights of viewers and recordings, whatever is configured */
+  if (dvbbuffer_conf.warm_weight < 1)
+    dvbbuffer_conf.warm_weight = 1;
+  if (dvbbuffer_conf.warm_weight >= SUBSCRIPTION_PRIO_MIN)
+    dvbbuffer_conf.warm_weight = SUBSCRIPTION_PRIO_MIN - 1;
+  if (dvbbuffer_conf.warm_max > 16)     /* one field per warm mux on the page */
+    dvbbuffer_conf.warm_max = 16;
 }
 
 /* the descrambler queue of a service started from the ring holds its
@@ -52,6 +59,8 @@ dvbbuffer_conf_class_changed(idnode_t *self)
 {
   dvbbuffer_conf_fixup();
   dvbbuffer_mux_conf_changed();
+  /* buffer size / bitrate apply to muxes started from now on */
+  dvbbuffer_warm_reconcile();
 }
 
 static htsmsg_t *
@@ -115,6 +124,27 @@ const idclass_t dvbbuffer_conf_class = {
       .opts   = PO_ADVANCED,
       .group  = 1,
     },
+    {
+      .type   = PT_U32,
+      .id     = "warm_weight",
+      .name   = N_("Warm mux weight"),
+      .desc   = N_("Subscription weight of the warm muxes (1 to 9): what "
+                   "has a higher weight takes their tuners. Up to 3 the OTA "
+                   "EPG grabber (4) may take them, up to 4 initial scans "
+                   "(5), up to 5 user scans (6), up to 6 the service mapper "
+                   "(7). Viewers and recordings always win."),
+      .off    = offsetof(dvbbuffer_conf_t, warm_weight),
+      .opts   = PO_ADVANCED,
+      .group  = 1,
+    },
+    {
+      .type   = PT_U32,
+      .id     = "warm_max",
+      .name   = N_("Maximum warm muxes"),
+      .desc   = N_("At most this many muxes are kept warm (up to 16)."),
+      .off    = offsetof(dvbbuffer_conf_t, warm_max),
+      .group  = 1,
+    },
     {}
   }
 };
@@ -134,6 +164,8 @@ dvbbuffer_conf_init(void)
   dvbbuffer_conf.enabled          = 1;
   dvbbuffer_conf.buffer_sec       = DVBBUFFER_BUFFER_SEC_DEFAULT;
   dvbbuffer_conf.max_bitrate_kbps = 80000;
+  dvbbuffer_conf.warm_weight      = 5;
+  dvbbuffer_conf.warm_max         = 4;
 
   idclass_register(&dvbbuffer_conf_class);
 
