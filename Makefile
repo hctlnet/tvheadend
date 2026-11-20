@@ -175,6 +175,14 @@ CFLAGS  += -I$(BUILDDIR)/hdhomerun
 LDFLAGS += $(BUILDDIR)/hdhomerun/libhdhomerun/libhdhomerun.a
 endif
 
+# libdvbdab and pugixml (Makefile.dvbdab): C++, so the C++ runtime as well
+ifeq ($(CONFIG_DVBDAB_STATIC),yes)
+CFLAGS  += -I$(BUILDDIR)/dvbdab/build/include
+LDFLAGS += $(BUILDDIR)/dvbdab/build/lib/libdvbdab.a
+LDFLAGS += $(BUILDDIR)/dvbdab/build/lib/libpugixml.a
+LDFLAGS += -lstdc++ -lz
+endif
+
 vpath %.c $(ROOTDIR)
 vpath %.h $(ROOTDIR)
 
@@ -715,6 +723,9 @@ endif
 ifeq ($(CONFIG_HDHOMERUN_STATIC),yes)
 ALL-yes   += ${BUILDDIR}/libhdhomerun_stamp
 endif
+ifeq ($(CONFIG_DVBDAB_STATIC),yes)
+ALL-yes   += ${BUILDDIR}/libdvbdab_stamp
+endif
 
 SRCS += build.c timestamp.c
 
@@ -935,6 +946,24 @@ ifeq ($(CONFIG_PCLOUD_CACHE),yes)
 	$(MAKE) -f Makefile.hdhomerun libcacheput
 else
 	$(MAKE) -f Makefile.hdhomerun build
+endif
+
+# Static libdvbdab library
+
+ifeq ($(CONFIG_DVBDAB_STATIC),yes)
+${SRCS-DAB}: ${BUILDDIR}/libdvbdab_stamp
+endif
+
+${BUILDDIR}/libdvbdab_stamp: ${BUILDDIR}/dvbdab/build/lib/libdvbdab.a
+	@touch $@
+
+${BUILDDIR}/dvbdab/build/lib/libdvbdab.a: Makefile.dvbdab
+ifeq ($(CONFIG_PCLOUD_CACHE),yes)
+	$(MAKE) -f Makefile.dvbdab libcacheget
+	$(MAKE) -f Makefile.dvbdab build
+	$(MAKE) -f Makefile.dvbdab libcacheput
+else
+	$(MAKE) -f Makefile.dvbdab build
 endif
 
 .PHONY: ffmpeg_rebuild

@@ -65,6 +65,7 @@ OPTIONS=(
   "pcre2:auto"
   "uriparser:auto"
   "dvbdab:auto"
+  "dvbdab_static:yes"
   "ccache:auto"
   "tvhcsa:auto"
   "bundle:no"
@@ -561,12 +562,36 @@ fi
 #
 # libdvbdab - DAB/DAB+ in DVB streams (ETI-NA, MPE, TS NI)
 #
+# dvbdab_static: downloaded and built here (Makefile.dvbdab), with pugixml.
+# That needs a C++ compiler and cmake 3.20 or later; without them the
+# installed library is looked for, and without that DAB is left out (or,
+# with --enable-dvbdab, configure stops).
+#
 if enabled_or_auto dvbdab; then
-  if check_pkg dvbdab ">=2.0.0"; then
-    enable dvbdab
-  elif enabled dvbdab; then
-    die "libdvbdab >= 2.0.0 not found (use --disable-dvbdab)"
+  if enabled dvbdab_static; then
+    cmake_ver=$(cmake --version 2>/dev/null | sed -n '1s/^cmake version \([0-9]*\)\.\([0-9]*\).*/\1 \2/p')
+    printf "$TAB" "checking for cmake >= 3.20 ..."
+    if [ -n "$cmake_ver" ] && [ $(( ${cmake_ver% *} * 1000 + ${cmake_ver#* } )) -ge 3020 ]; then
+      echo "ok"
+      if check_cc_lib stdc++ stdcpp; then
+        enable dvbdab
+      else
+        disable dvbdab_static
+      fi
+    else
+      echo "fail"
+      disable dvbdab_static
+    fi
   fi
+  if disabled dvbdab_static; then
+    if check_pkg dvbdab ">=2.0.0"; then
+      enable dvbdab
+    elif enabled dvbdab; then
+      die "libdvbdab >= 2.0.0 not found, and it cannot be built here: that needs a C++ compiler and cmake >= 3.20 (use --disable-dvbdab)"
+    fi
+  fi
+else
+  disable dvbdab_static
 fi
 
 #
@@ -891,6 +916,7 @@ fi
 # DAB muxes are sub-muxes of DVB networks
 if enabled dvbdab && ! enabled mpegts_dvb; then
   disable dvbdab
+  disable dvbdab_static
 fi
 
 #
