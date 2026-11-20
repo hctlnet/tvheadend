@@ -13,6 +13,8 @@ import PrimeVue from 'primevue/config'
 
 const stubs = await vi.hoisted(() => import('@/test/__helpers__/gridViewTestUtils'))
 vi.mock('@/api/client', () => stubs.apiClient)
+vi.mock('@/components/IdnodeEditor.vue', () => stubs.idnodeEditor)
+vi.mock('@/components/IdnodePickEntityDialog.vue', () => stubs.emptyComponent)
 vi.mock('vue-router', () => stubs.vueRouter)
 
 import DvbMuxTreeView from '../DvbMuxTreeView.vue'
@@ -535,5 +537,63 @@ describe('DvbMuxTreeView search in the service names', () => {
     await searchServiceNames(w, '2 (w')
     expect(shows(w, 'ORF 2 (W)')).toBe(true)
     expect(shows(w, 'Das Erste HD')).toBe(false)
+  })
+})
+
+/* the editor the view rendered: what it was opened with */
+function editor(w: Wrapper) {
+  const c = w.findComponent({ name: 'IdnodeEditor' })
+  return { attrs: c.vm.$attrs as Record<string, unknown>, emit: (ev: string, ...a: unknown[]) => c.vm.$emit(ev, ...a) }
+}
+
+describe('DvbMuxTreeView editor', () => {
+  it('opens the editor of a mux, a service and a network by a double click', async () => {
+    const w = await mountTree()
+    await expand(w, 'Astra (1)')
+    await expand(w, '11494H')
+    await rowOf(w, '11494H').trigger('dblclick')
+    expect(stubs.captured.editor.uuid).toBe('m1')
+    expect(editor(w).attrs.title).toBe('Edit Mux')
+    await rowOf(w, 'Das Erste HD').trigger('dblclick')
+    expect(stubs.captured.editor.uuid).toBe('s1')
+    await rowOf(w, 'Astra (1)').trigger('dblclick')
+    expect(stubs.captured.editor.uuid).toBe('n1')
+  })
+
+  it('loads the network of an edited mux again when the editor closes', async () => {
+    const w = await mountTree()
+    await expand(w, 'Astra (1)')
+    await rowOf(w, '11494H').trigger('dblclick')
+    const before = calls('mpegts/mux/grid').length
+    editor(w).emit('close')
+    await flushPromises()
+    expect(stubs.captured.editor.uuid).toBeNull()
+    expect(calls('mpegts/mux/grid')).toHaveLength(before + 1)
+  })
+
+  it('adds a mux to the network of the row clicked last, and goes on with its editor', async () => {
+    const w = await mountTree()
+    await rowOf(w, 'Astra (1)').trigger('click')
+    await button(w, 'Add').trigger('click')
+    expect(editor(w).attrs['create-base']).toBe('mpegts/network')
+    expect(editor(w).attrs['parent-scoped']).toMatchObject({
+      createEndpoint: 'mpegts/network/mux_create',
+      params: { uuid: 'n1' },
+    })
+    editor(w).emit('created', 'm9')
+    await flushPromises()
+    expect(stubs.captured.editor.uuid).toBe('m9')
+    expect(editor(w).attrs['create-base']).toBeNull()
+  })
+
+  it('asks for the network when no row was clicked', async () => {
+    const w = await mountTree()
+    const picker = w.findComponent({ name: 'EmptyStub' })
+    expect(picker.vm.$attrs.visible).toBe(false)
+    await button(w, 'Add').trigger('click')
+    expect(picker.vm.$attrs.visible).toBe(true)
+    picker.vm.$emit('pick', 'n2', 'IPTV Automatic Network')
+    await flushPromises()
+    expect(editor(w).attrs['parent-scoped']).toMatchObject({ params: { uuid: 'n2' } })
   })
 })
