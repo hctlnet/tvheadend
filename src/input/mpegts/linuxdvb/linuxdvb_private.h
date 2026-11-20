@@ -152,6 +152,13 @@ struct linuxdvb_frontend
   uint32_t                  lfe_sig_multiplier;
   uint32_t                  lfe_snr_multiplier;
   uint32_t                  lfe_grace_period;
+  /*
+   * Neumo DVB driver detection (from FE_GET_EXTENDED_INFO)
+   */
+  int                       lfe_neumo_detected;     /* 1 if the DVB core is the Neumo one (it answered) */
+  int                       lfe_neumo_supported;    /* 1 if driver supports Neumo extensions */
+  uint8_t                   lfe_num_rf_inputs;      /* Number of RF inputs available */
+  int8_t                    lfe_default_rf_input;   /* Default RF input */
 
   /*
    * Satconf (DVB-S only)
@@ -601,5 +608,26 @@ void linuxdvb_satconf_reset ( linuxdvb_satconf_t *ls );
 
 static inline int linuxdvb_satconf_fe_fd ( linuxdvb_satconf_t *ls )
   { return ((linuxdvb_frontend_t *)ls->ls_frontend)->lfe_fe_fd; }
+
+/*
+ * FE_SET_PROPERTY and FE_GET_PROPERTY. The headers of the Neumo driver give
+ * them numbers of their own; a kernel without its DVB core knows only the
+ * standard ones, which these headers call DVB_API_FE_SET_PROPERTY and
+ * DVB_API_FE_GET_PROPERTY (the properties have the same layout). So a build
+ * with these headers takes the number by frontend - neumo: it answered
+ * FE_GET_EXTENDED_INFO (lfe_neumo_detected).
+ */
+#if ENABLE_LINUXDVB_NEUMO
+#define linuxdvb_fe_set_property(fd, neumo, p) \
+  ioctl(fd, (neumo) ? FE_SET_PROPERTY : DVB_API_FE_SET_PROPERTY, p)
+#define linuxdvb_fe_get_property(fd, neumo, p) \
+  ioctl(fd, (neumo) ? FE_GET_PROPERTY : DVB_API_FE_GET_PROPERTY, p)
+#else
+#define linuxdvb_fe_set_property(fd, neumo, p) \
+  ((void)(neumo), ioctl(fd, FE_SET_PROPERTY, p))
+#define linuxdvb_fe_get_property(fd, neumo, p) \
+  ((void)(neumo), ioctl(fd, FE_GET_PROPERTY, p))
+#endif
+
 
 #endif /* __TVH_LINUXDVB_PRIVATE_H__ */

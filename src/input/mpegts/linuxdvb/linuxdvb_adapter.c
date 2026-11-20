@@ -275,9 +275,22 @@ linuxdvb_get_type(int linux_type)
 /*
  *
  */
+/* the frontend device for the queries of linuxdvb_adapter_add() */
+static int
+linuxdvb_adapter_open_fe(const char *fe_path, int flags)
+{
+  int fd = -1, j;
+
+  for (j = 0; j < MAX_DEV_OPEN_ATTEMPTS; j++) {
+    if ((fd = tvh_open(fe_path, flags, 0)) >= 0) break;
+    tvh_safe_usleep(100000);
+  }
+  return fd;
+}
+
 #if DVB_VER_ATLEAST(5,5)
 static void
-linuxdvb_get_systems(int fd, struct dtv_property *_cmd)
+linuxdvb_get_systems(int fd, int neumo, struct dtv_property *_cmd)
 {
   struct dtv_property cmd = {
     .cmd = DTV_ENUM_DELSYS
@@ -288,7 +301,7 @@ linuxdvb_get_systems(int fd, struct dtv_property *_cmd)
   };
   int r;
 
-  r = ioctl(fd, FE_GET_PROPERTY, &cmdseq);
+  r = linuxdvb_fe_get_property(fd, neumo, &cmdseq);
   if (!r && cmd.u.buffer.len) {
     struct dtv_property fecmd[2] = {
       {
@@ -301,7 +314,7 @@ linuxdvb_get_systems(int fd, struct dtv_property *_cmd)
     };
     cmdseq.props = fecmd;
     cmdseq.num   = 2;
-    r = ioctl(fd, FE_SET_PROPERTY, &cmdseq);
+    r = linuxdvb_fe_set_property(fd, neumo, &cmdseq);
   } else {
     cmd.u.buffer.len = 0;
   }
@@ -399,17 +412,37 @@ linuxdvb_adapter_add ( const char *path )
     }
     if (access(fe_path, R_OK | W_OK)) continue;
 
-    /* Get frontend info */
-    for (j = 0; j < MAX_DEV_OPEN_ATTEMPTS; j++) {
-      if ((fd = tvh_open(fe_path, O_RDWR, 0)) >= 0) break;
-      tvh_safe_usleep(100000);
+    /* Get frontend info. With the Neumo driver read-only: a read-write open
+     * starts the frontend thread, and the driver reserves the default RF input
+     * for it (as its master, without Unicable) until the thread sleeps after
+     * the close. Opened again before that, the reservation stays, and the RF
+     * input refuses the other tuners of a Unicable cable (EPERM). The queries
+     * here need no write access. */
+    int neumo_api = 0;
+#if ENABLE_LINUXDVB_NEUMO
+    fd = linuxdvb_adapter_open_fe(fe_path, O_RDONLY);
+    if (fd >= 0) {
+      /* Neumo capability detection */
+      struct dvb_frontend_extended_info ext_info;
+      memset(&ext_info, 0, sizeof(ext_info));
+      if (ioctl(fd, FE_GET_EXTENDED_INFO, &ext_info) >= 0) {
+        neumo_api = 1;
+      } else {
+        /* a kernel without the DVB core of the Neumo driver: read-write,
+         * as a build without its headers opens it */
+        close(fd);
+        fd = linuxdvb_adapter_open_fe(fe_path, O_RDWR);
+      }
     }
+#else
+    fd = linuxdvb_adapter_open_fe(fe_path, O_RDWR);
+#endif
     if (fd < 0) {
       tvherror(LS_LINUXDVB, "unable to open %s", fe_path);
       continue;
     }
 #if DVB_VER_ATLEAST(5,5)
-    linuxdvb_get_systems(fd, &cmd);
+    linuxdvb_get_systems(fd, neumo_api, &cmd);
 #endif
     r = ioctl(fd, FE_GET_INFO, &dfi);
     close(fd);
