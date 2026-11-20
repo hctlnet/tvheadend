@@ -120,6 +120,27 @@ export function containsMatch(text: string): string {
   return text.replace(/[.[\]()*+?{}|^$\\]/g, '\\$&')
 }
 
+/* an address typed for a DAB sub-mux: a.b.c.d with the octets 0 to 255,
+ * an optional :port 1 to 65535 (0: none); null when it is none - the
+ * server would take 300.1.2.3 as 44.1.2.3 and cut the port to 16 bits */
+export function parseAddress(text: string): { ip: string; port: number } | null {
+  const m = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})(?::(\d{1,5}))?$/.exec(text.trim())
+  if (!m) return null
+  const octets = m.slice(1, 5).map(Number)
+  if (octets.some((o) => o > 255)) return null
+  const port = m[5] === undefined ? 0 : Number(m[5])
+  if (m[5] !== undefined && (port < 1 || port > 65535)) return null
+  return { ip: octets.join('.'), port }
+}
+
+/* a PID typed for a sub-mux, decimal or 0x hex: 1 to 0x1FFE (0x1FFF is
+ * the null packet); null when it is none */
+export function parsePid(text: string): number | null {
+  const v = text.trim()
+  const pid = /^0x[0-9a-f]+$/i.test(v) ? parseInt(v, 16) : /^\d+$/.test(v) ? Number(v) : NaN
+  return Number.isInteger(pid) && pid > 0 && pid < 0x1fff ? pid : null
+}
+
 /* the IP address and port of a DAB ensemble in MPE or GSE, else '' */
 export function addressLabel(row: MuxRow): string {
   if (!row.dab_ip) return ''

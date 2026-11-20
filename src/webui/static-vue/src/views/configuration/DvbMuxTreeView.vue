@@ -25,7 +25,9 @@
  *
  * Live: Comet notifications of muxes, services and networks reload the
  * networks they belong to (collected for a second).
- * The "On" box of a row enables a mux or service at once.
+ * The "On" box of a row enables a mux or service at once; the PID and
+ * the address of a sub-mux are edited in their cells (a click, Enter
+ * saves, Escape leaves).
  *
  * The networks come from `mpegts/network/grid` (all of them: the muxes
  * of an IPTV network have no sub-muxes and are a flat list), the muxes
@@ -115,9 +117,16 @@ import {
   expandableKeys,
   filterTree,
   MUX_FIELDS,
+  MUX_TYPE_DAB_ETI,
+  MUX_TYPE_DAB_GSE,
+  MUX_TYPE_DAB_MPE,
+  MUX_TYPE_DAB_TSNI,
+  MUX_TYPE_T2MI,
   MUX_TYPE_TS,
   muxSearchText,
   muxTypeName,
+  parseAddress,
+  parsePid,
   scanEnabled,
   scanPending,
   scanQueued,
@@ -358,16 +367,24 @@ function carrierOf(row: MuxRow): ServiceRow | null {
   return services.value[row.network_uuid]?.get(row.parent_mux)?.find((x) => x.sid === sid) ?? null
 }
 
-function carrierLabel(row: MuxRow): string {
+/* the Address column of a sub-mux: ip:port, and the service (carrier or
+ * announcing) */
+function sourceLabel(row: MuxRow): string {
+  const addr = addressLabel(row)
   const sid = serviceSidOf(row)
-  if (!sid) return ''
+  if (!sid) return addr
   const name = carrierOf(row)?.svcname
-  return name ? `${sid} · ${name}` : String(sid)
+  if (addr) return `${addr} · ${name || `SID ${sid}`}`
+  return name ? `SID ${sid} · ${name}` : `SID ${sid}`
+}
+
+function pidLabel(row: MuxRow): string {
+  return typeof row.pid === 'number' && row.pid > 0 ? String(row.pid) : ''
 }
 
 function carrierTitle(row: MuxRow): string | undefined {
   const sid = serviceSidOf(row)
-  if (!sid) return undefined
+  if (!sid) return addressLabel(row) || undefined
   const c = carrierOf(row)
   if (!row.carrier_sid)
     return c ? t('Announced by the service {0} (SID {1})', c.svcname ?? '', sid) : t('Announced by the service SID {0}', sid)
@@ -1306,6 +1323,86 @@ function scanStateLabel(row: MuxRow): string {
   return row.scan_state === SCAN_STATE_ACTIVE ? t('scanning…') : t('queued')
 }
 
+/* the sub-muxes in a PID (T2MI, DAB in a PID), DAB over IP (address) */
+const PID_TYPES = new Set([MUX_TYPE_T2MI, MUX_TYPE_DAB_MPE, MUX_TYPE_DAB_ETI, MUX_TYPE_DAB_TSNI])
+const ADDRESS_TYPES = new Set([MUX_TYPE_DAB_MPE, MUX_TYPE_DAB_GSE])
+
+function pidEditable(row: MuxRow): boolean {
+  return PID_TYPES.has(row.tstype ?? MUX_TYPE_TS) && !!row.parent_mux
+}
+
+function addressEditable(row: MuxRow): boolean {
+  return ADDRESS_TYPES.has(row.tstype ?? MUX_TYPE_TS) && !!row.parent_mux
+}
+
+const cellEdit = ref<{ uuid: string; field: 'pid' | 'address'; value: string } | null>(null)
+
+function startCellEdit(row: MuxRow, field: 'pid' | 'address') {
+  cellEdit.value = { uuid: row.uuid, field, value: field === 'pid' ? String(row.pid ?? '') : addressLabel(row) }
+}
+
+function cellEditable(row: MuxRow, field: 'pid' | 'address'): boolean {
+  return field === 'pid' ? pidEditable(row) : addressEditable(row)
+}
+
+/* a click in an editable cell edits it (no row selection) */
+function onEditableCell(ev: MouseEvent, row: MuxRow, field: 'pid' | 'address') {
+  if (!cellEditable(row, field)) return
+  ev.stopPropagation()
+  startCellEdit(row, field)
+}
+
+/* ... and its double click does not open the editor */
+function onEditableDblclick(ev: MouseEvent, row: MuxRow, field: 'pid' | 'address') {
+  if (cellEditable(row, field)) ev.stopPropagation()
+}
+
+function cancelCellEdit() {
+  cellEdit.value = null
+}
+
+/* Enter or leaving the cell saves; the change shows at once, and when its
+ * save fails the old value is back and the network reloads */
+async function commitCellEdit(row: MuxRow) {
+  const e = cellEdit.value
+  if (!e || e.uuid !== row.uuid) return
+  cellEdit.value = null
+  const v = e.value.trim()
+  /* left empty: no change */
+  if (!v) return
+  if (e.field === 'pid') {
+    const pid = parsePid(v)
+    if (pid === null) {
+      toast.warn(t('Not a PID: {0} (1 to 8190, or 0x1 to 0x1FFE)', v))
+      return
+    }
+    if (pid === row.pid) return
+    const old = row.pid
+    row.pid = pid
+    triggerRef(trees)
+    if (await saveFields(row.uuid, { pid })) return
+    row.pid = old
+    triggerRef(trees)
+    reloadNetworkOf(row)
+  } else {
+    const a = parseAddress(v)
+    if (!a) {
+      toast.warn(t('Not an address: {0} (a.b.c.d of 0 to 255, :port 1 to 65535)', v))
+      return
+    }
+    if (a.ip === row.dab_ip && a.port === (row.dab_port ?? 0)) return
+    const old = { ip: row.dab_ip, port: row.dab_port }
+    row.dab_ip = a.ip
+    row.dab_port = a.port
+    triggerRef(trees)
+    if (await saveFields(row.uuid, { dab_ip: a.ip, dab_port: a.port })) return
+    row.dab_ip = old.ip
+    row.dab_port = old.port
+    triggerRef(trees)
+    reloadNetworkOf(row)
+  }
+}
+
 function enabledLabel(row: MuxRow): string {
   if (row.enabled === 0) return t('disabled')
   if (row.enabled === -1) return t('ignored')
@@ -1345,6 +1442,9 @@ function scanSummary(node: MuxTreeNode): string {
 function indent(depth: number): Record<string, string> {
   return { paddingLeft: `calc(${depth} * 1.25rem + var(--tvh-space-2))` }
 }
+
+/* the cell input gets the focus when it appears */
+const vFocus = { mounted: (el: HTMLElement) => el.focus() }
 
 onMounted(loadNetworks)
 </script>
@@ -1446,7 +1546,8 @@ onMounted(loadNetworks)
           <col class="mux-tree__col-select" />
           <col />
           <col class="mux-tree__col-type" />
-          <col class="mux-tree__col-sid" />
+          <col class="mux-tree__col-pid" />
+          <col class="mux-tree__col-address" />
           <col class="mux-tree__col-scan" />
           <col class="mux-tree__col-count" />
           <col class="mux-tree__col-count" />
@@ -1465,7 +1566,8 @@ onMounted(loadNetworks)
             </th>
             <th class="mux-tree__name">{{ t('Name') }}</th>
             <th>{{ t('Type') }}</th>
-            <th>{{ t('SID') }}</th>
+            <th class="mux-tree__num">{{ t('PID') }}</th>
+            <th>{{ t('Address') }}</th>
             <th>{{ t('Scan result') }}</th>
             <th class="mux-tree__num">{{ t('Services') }}</th>
             <th class="mux-tree__num">{{ t('Channels') }}</th>
@@ -1509,7 +1611,7 @@ onMounted(loadNetworks)
             <!-- network and transponder rows: the name uses the columns before the scan result -->
             <td
               class="mux-tree__name"
-              :colspan="r.wide ? 3 : undefined"
+              :colspan="r.wide ? 4 : undefined"
               :style="indent(r.depth)"
               :title="nameTitle(r)"
             >
@@ -1567,15 +1669,56 @@ onMounted(loadNetworks)
             <template v-if="r.node">
               <template v-if="!r.wide">
                 <td>{{ muxTypeName(r.node.row.tstype) }}</td>
-                <!-- a sub-mux in a PID: the service it is carried in or announced by -->
-                <td class="mux-tree__sid" :title="carrierTitle(r.node.row)">
-                  <Lock
-                    v-if="r.node.row.carrier_sid && carrierOf(r.node.row)?.encrypted"
-                    class="mux-tree__lock"
-                    :size="12"
-                    :stroke-width="2"
+                <!-- a sub-mux in a PID: the PID, edited in the cell -->
+                <td
+                  class="mux-tree__num"
+                  :class="{ 'mux-tree__editable': pidEditable(r.node.row) }"
+                  @click="onEditableCell($event, r.node.row, 'pid')"
+                  @dblclick="onEditableDblclick($event, r.node.row, 'pid')"
+                >
+                  <input
+                    v-if="cellEdit?.uuid === r.node.row.uuid && cellEdit.field === 'pid'"
+                    v-model="cellEdit.value"
+                    v-focus
+                    class="mux-tree__cell-input mux-tree__num"
+                    :aria-label="t('PID')"
+                    @keydown.enter.prevent="commitCellEdit(r.node.row)"
+                    @keydown.esc.prevent="cancelCellEdit"
+                    @blur="commitCellEdit(r.node.row)"
+                    @click.stop
                   />
-                  {{ carrierLabel(r.node.row) }}
+                  <template v-else>{{ pidLabel(r.node.row) }}</template>
+                </td>
+                <!-- its address (DAB over IP, edited in the cell) and the service
+                     it is carried in or announced by -->
+                <td
+                  class="mux-tree__address"
+                  :class="{ 'mux-tree__editable': addressEditable(r.node.row) }"
+                  :title="carrierTitle(r.node.row)"
+                  @click="onEditableCell($event, r.node.row, 'address')"
+                  @dblclick="onEditableDblclick($event, r.node.row, 'address')"
+                >
+                  <input
+                    v-if="cellEdit?.uuid === r.node.row.uuid && cellEdit.field === 'address'"
+                    v-model="cellEdit.value"
+                    v-focus
+                    class="mux-tree__cell-input"
+                    :aria-label="t('Address')"
+                    placeholder="239.1.2.3:1234"
+                    @keydown.enter.prevent="commitCellEdit(r.node.row)"
+                    @keydown.esc.prevent="cancelCellEdit"
+                    @blur="commitCellEdit(r.node.row)"
+                    @click.stop
+                  />
+                  <template v-else>
+                    <Lock
+                      v-if="r.node.row.carrier_sid && carrierOf(r.node.row)?.encrypted"
+                      class="mux-tree__lock"
+                      :size="12"
+                      :stroke-width="2"
+                    />
+                    {{ sourceLabel(r.node.row) }}
+                  </template>
                 </td>
               </template>
               <td>
@@ -1599,9 +1742,10 @@ onMounted(loadNetworks)
             </template>
             <template v-else-if="r.service">
               <td>{{ serviceTypeName(r.service.dvb_servicetype) }}</td>
-              <td class="mux-tree__sid" :title="serviceTitle(r.service)">
+              <td />
+              <td class="mux-tree__address" :title="serviceTitle(r.service)">
                 <Lock v-if="r.service.encrypted" class="mux-tree__lock" :size="12" :stroke-width="2" />
-                {{ r.service.sid }}<template v-if="r.service.encrypted"> · {{ caidList(r.service.caid) }}</template>
+                SID {{ r.service.sid }}<template v-if="r.service.encrypted"> · {{ caidList(r.service.caid) }}</template>
               </td>
               <td colspan="2" class="mux-tree__streams" :title="r.service.streams">{{ r.service.streams }}</td>
               <td class="mux-tree__num">{{ r.service.channel?.length || '' }}</td>
@@ -1615,7 +1759,7 @@ onMounted(loadNetworks)
               <td class="mux-tree__num">{{ r.network.numSvc }}</td>
               <td class="mux-tree__num">{{ r.network.numChn }}</td>
             </template>
-            <td v-else colspan="5" />
+            <td v-else colspan="6" />
             <td class="mux-tree__select-cell">
               <input
                 v-if="enabledState(r)"
@@ -1833,8 +1977,31 @@ onMounted(loadNetworks)
   width: 88px;
 }
 
-.mux-tree__col-sid {
+.mux-tree__col-pid {
+  width: 52px;
+}
+
+.mux-tree__col-address {
   width: 148px;
+}
+
+.mux-tree__editable {
+  cursor: text;
+}
+
+.mux-tree__editable:hover {
+  box-shadow: inset 0 -1px 0 var(--tvh-primary);
+}
+
+.mux-tree__cell-input {
+  width: 100%;
+  box-sizing: border-box;
+  font: inherit;
+  padding: 1px 4px;
+  border: 1px solid var(--tvh-primary);
+  border-radius: var(--tvh-radius-sm);
+  background: var(--tvh-bg-surface);
+  color: var(--tvh-text);
 }
 
 .mux-tree__col-scan {
@@ -1986,7 +2153,7 @@ onMounted(loadNetworks)
   text-align: right;
 }
 
-.mux-tree__sid {
+.mux-tree__address {
   font-variant-numeric: tabular-nums;
 }
 
