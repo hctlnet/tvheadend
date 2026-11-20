@@ -72,20 +72,23 @@ static linuxdvb_unicable_group_list_t linuxdvb_unicable_groups;
 static tvh_mutex_t linuxdvb_unicable_groups_lock;
 
 /*
- * Find master satconf element for a unicable group (with several masters
- * set, the first one; a warning says so)
+ * The master of a unicable group: of the tuners marked as master the one
+ * with the lowest number (adapter, then frontend) whose device is open - a
+ * disabled tuner, or one idle with power save, cannot send. *masters: how
+ * many tuners are marked. NULL: none of them is open.
  * Must be called WITHOUT groups_lock held
  */
 static linuxdvb_satconf_ele_t *
-linuxdvb_unicable_find_master ( linuxdvb_unicable_group_t *group )
+linuxdvb_unicable_find_master ( linuxdvb_unicable_group_t *group, int *masters )
 {
   tvh_hardware_t *th;
   linuxdvb_adapter_t *la;
   linuxdvb_frontend_t *lfe;
+  linuxdvb_frontend_t *mfe = NULL;
   linuxdvb_satconf_ele_t *lse;
   linuxdvb_satconf_ele_t *master = NULL;
-  int n = 0;
 
+  *masters = 0;
   LIST_FOREACH(th, &tvh_hardware, th_link) {
     if (!idnode_is_instance(&th->th_id, &linuxdvb_adapter_class))
       continue;
@@ -97,18 +100,21 @@ linuxdvb_unicable_find_master ( linuxdvb_unicable_group_t *group )
         if (!lse->lse_en50494)
           continue;
         linuxdvb_en50494_t *le = (linuxdvb_en50494_t *)lse->lse_en50494;
-        if (le->le_group_id == group->lug_group_id && le->le_is_master) {
-          master = master ?: lse;     /* the first one */
-          n++;
-          break;                      /* a tuner counts once, not per element */
+        if (le->le_group_id != group->lug_group_id || !le->le_is_master)
+          continue;
+        (*masters)++;
+        if (lfe->lfe_fe_fd > 0 &&
+            (mfe == NULL ||
+             la->la_dvb_number < mfe->lfe_adapter->la_dvb_number ||
+             (la->la_dvb_number == mfe->lfe_adapter->la_dvb_number &&
+              lfe->lfe_number < mfe->lfe_number))) {
+          master = lse;
+          mfe = lfe;
         }
+        break;                        /* a tuner counts once, not per element */
       }
     }
   }
-  if (n > 1)
-    tvhlog(tvhlog_limit(&group->lug_masters_log, 3600) ? LOG_WARNING : LOG_DEBUG,
-           LS_EN50494, "group %d has %d master tuners, the one of %s sends the commands",
-           group->lug_group_id, n, master->lse_parent->ls_frontend->mi_name ?: "");
   return master;
 }
 
@@ -158,21 +164,20 @@ linuxdvb_unicable_get_master_fd ( linuxdvb_unicable_group_t *group,
 {
   linuxdvb_satconf_ele_t *lse;
   linuxdvb_frontend_t *lfe;
+  int masters;
 
   lock_assert(&global_lock);
-  lse = linuxdvb_unicable_find_master(group);
+  lse = linuxdvb_unicable_find_master(group, &masters);
   if (!lse) {
-    tvhdebug(LS_EN50494, "no master found for unicable group %d", group->lug_group_id);
+    /* none marked, or all closed: disabled, or idle with power save */
+    if (masters)
+      tvhdebug(LS_EN50494, "none of the %d master tuner(s) of unicable group %d is open",
+               masters, group->lug_group_id);
+    else
+      tvhdebug(LS_EN50494, "no master found for unicable group %d", group->lug_group_id);
     return -1;
   }
   lfe = (linuxdvb_frontend_t *)lse->lse_parent->ls_frontend;
-
-  /* closed: disabled, or idle with power save */
-  if (lfe->lfe_fe_fd <= 0) {
-    tvhdebug(LS_EN50494, "master frontend FD not open for group %d (frontend %s)",
-             group->lug_group_id, lfe->lfe_fe_path);
-    return -1;
-  }
 
   *master = lse;
   return lfe->lfe_fe_fd;
@@ -334,7 +339,7 @@ const idclass_t linuxdvb_en50494_class =
       .name   = N_("Unicable group"),
       .desc   = N_("Unicable elements in the same group share one cable: their "
                    "commands are sent one at a time, those of the slaves through the "
-                   "master's tuner. None = no group."),
+                   "tuner of a master. None = no group."),
       .off    = offsetof(linuxdvb_en50494_t, le_group_id),
       .list   = linuxdvb_en50494_group_list,
       .opts   = PO_ADVANCED,
@@ -343,9 +348,10 @@ const idclass_t linuxdvb_en50494_class =
       .type   = PT_BOOL,
       .id     = "is_master",
       .name   = N_("Unicable master"),
-      .desc   = N_("This element's tuner sends the Unicable commands for all "
-                   "members of its group (one master per group). Without a usable "
-                   "master (disabled, or idle with power save) a slave sends itself."),
+      .desc   = N_("This element's tuner can send the Unicable commands for the "
+                   "members of its group. Of several masters of a group the one "
+                   "with the lowest number whose tuner is open sends; without one "
+                   "(disabled, or idle with power save) a slave sends itself."),
       .off    = offsetof(linuxdvb_en50494_t, le_is_master),
       .opts   = PO_ADVANCED,
     },
@@ -413,7 +419,7 @@ const idclass_t linuxdvb_en50607_class =
       .name   = N_("Unicable group"),
       .desc   = N_("Unicable elements in the same group share one cable: their "
                    "commands are sent one at a time, those of the slaves through the "
-                   "master's tuner. None = no group."),
+                   "tuner of a master. None = no group."),
       .off    = offsetof(linuxdvb_en50494_t, le_group_id),
       .list   = linuxdvb_en50494_group_list,
       .opts   = PO_ADVANCED,
@@ -422,9 +428,10 @@ const idclass_t linuxdvb_en50607_class =
       .type   = PT_BOOL,
       .id     = "is_master",
       .name   = N_("Unicable master"),
-      .desc   = N_("This element's tuner sends the Unicable commands for all "
-                   "members of its group (one master per group). Without a usable "
-                   "master (disabled, or idle with power save) a slave sends itself."),
+      .desc   = N_("This element's tuner can send the Unicable commands for the "
+                   "members of its group. Of several masters of a group the one "
+                   "with the lowest number whose tuner is open sends; without one "
+                   "(disabled, or idle with power save) a slave sends itself."),
       .off    = offsetof(linuxdvb_en50494_t, le_is_master),
       .opts   = PO_ADVANCED,
     },
