@@ -327,6 +327,9 @@ const cols: ColumnDef[] = [
     targetUuidField: 'multiplex_uuid',
     targetAccessKey: 'admin',
   },
+  /* The sub-mux the service comes from: "TS (input stream) · ISI 14 ·
+   * <network>" - "TS" for a plain mux. */
+  { field: 'source', sortable: true, filterType: 'string', width: 240 },
   { field: 'multiplex_uuid', sortable: true, filterType: 'string', width: 280, editable: true },
   { field: 'sid', sortable: true, filterType: 'numeric', width: 100, editable: true },
   { field: 'lcn', sortable: true, filterType: 'numeric', width: 110, editable: true },
