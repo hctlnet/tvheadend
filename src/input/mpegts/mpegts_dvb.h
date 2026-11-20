@@ -214,7 +214,7 @@ dvb_mux_t *dvb_mux_create0
 
 extern const idclass_t dvb_mux_class;
 
-/* the PID a sub-mux is carried in; 0 for a mux that is not in a PID */
+/* the PID a sub-mux is carried in; 0 for a mux that is not a sub-mux */
 uint16_t   dvb_mux_stream_pid    ( mpegts_mux_t *mm );
 
 /* sub-muxes follow the tuning of the transponder they are carried in */

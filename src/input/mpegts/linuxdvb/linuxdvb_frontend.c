@@ -710,7 +710,11 @@ linuxdvb_frontend_is_enabled
 #endif
       return MI_IS_ENABLED_NEVER;
   }
+#if ENABLE_LINUXDVB_NEUMO
+  /* ... and its input streams come from it (the sub-mux input) */
+  if (mm->mm_type == MM_TYPE_ISI && lfe->lfe_supports_bbframes)
     return MI_IS_ENABLED_NEVER;
+#endif
   if (lfe->lfe_in_setup)
     return MI_IS_ENABLED_RETRY;
   if (lfe->lfe_type != DVB_TYPE_S)

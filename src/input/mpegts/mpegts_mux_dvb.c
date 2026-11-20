@@ -1646,10 +1646,11 @@ const idclass_t dvb_mux_dab_class =
  * *************************************************************************/
 
 /*
- * A sub-mux is carried in a transponder (in a PID of it: T2MI, DAB; an input
- * stream of a multistream transponder) and has its tuning. It keeps the uuid
- * of the transponder and follows its tuning when that changes (NIT, the
- * user): at its save, and when the sub-mux starts. All with global_lock.
+ * Sub-muxes are carried in a PID of a transponder (T2MI, DAB), or in the
+ * BBFrames of a multistream transponder (its input streams), and have its
+ * tuning. They keep the uuid of the transponder and follow its tuning when
+ * it changes (NIT, the user): at its save, and when they start.
+ * All with global_lock.
  */
 
 /* the same frequency (and polarisation) */
