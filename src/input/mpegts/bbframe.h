@@ -103,4 +103,10 @@ int  bbframe_split_take ( bbframe_split_t *bs, const uint8_t *pkt );
 void bbframe_split_ts ( bbframe_split_t *bs, const uint8_t *pkt,
                         bbframe_ts_cb_t cb, void *opaque );
 
+/* the frames themselves: header and data field (len bytes) and their
+ * input stream to cb */
+typedef void (*bbframe_frame_cb_t)(void *opaque, const uint8_t *frame, size_t len, int isi);
+void bbframe_split_frames ( bbframe_split_t *bs, const uint8_t *pkt,
+                            bbframe_frame_cb_t cb, void *opaque );
+
 #endif /* __TVH_BBFRAME_H__ */

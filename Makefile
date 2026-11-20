@@ -432,6 +432,7 @@ SRCS-MPEGTS-DVB = \
 	src/input/mpegts/mpegts_mux_dvb.c \
 	src/input/mpegts/mpegts_submux.c \
 	src/input/mpegts/bbframe.c \
+	src/input/mpegts/gse.c \
 	src/input/mpegts/t2mi.c \
 	src/input/mpegts/mpe.c \
 	src/input/mpegts/scanfile.c
