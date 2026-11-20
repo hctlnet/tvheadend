@@ -1376,8 +1376,27 @@ dvb_mux_submux_link ( dvb_mux_t *sm, const dvb_mux_t *parent )
   idnode_changed(&sm->mm_id);
 }
 
-/* the mux a sub-mux is carried in: its transponder; a configuration without
- * the link (or with the transponder gone) takes the mux of its frequency */
+/* a mux whose TS can carry a sub-mux in a PID (a T2-MI stream): a
+ * transponder with a TS of its own, or an input stream on a transponder -
+ * one level of sub-muxes in sub-muxes */
+int
+dvb_mux_pid_carrier_ok ( mpegts_mux_t *mm )
+{
+  dvb_mux_t *p;
+
+  if (!idnode_is_instance(&mm->mm_id, &dvb_mux_class) || ((dvb_mux_t *)mm)->lm_multistream)
+    return 0;
+  if (!mpegts_mux_is_submux(mm))
+    return 1;
+  if (mpegts_mux_in_pid(mm))
+    return 0;
+  p = dvb_mux_submux_parent((dvb_mux_t *)mm);
+  return p != NULL && !mpegts_mux_is_submux((mpegts_mux_t *)p);
+}
+
+/* the mux a sub-mux is carried in: its transponder, or for a T2-MI stream
+ * in an input stream that sub-mux; a configuration without the link (or
+ * with the transponder gone) takes the mux of its frequency */
 dvb_mux_t *
 dvb_mux_submux_parent ( dvb_mux_t *sm )
 {
@@ -1387,8 +1406,10 @@ dvb_mux_submux_parent ( dvb_mux_t *sm )
   if (sm->lm_parent) {
     p = mpegts_mux_find(sm->lm_parent);
     if (p != NULL && p != mm && p->mm_network == mm->mm_network &&
-        idnode_is_instance(&p->mm_id, &dvb_mux_class) && !mpegts_mux_is_submux(p) &&
-        (!mpegts_mux_in_bbframes(mm) || ((dvb_mux_t *)p)->lm_multistream))
+        idnode_is_instance(&p->mm_id, &dvb_mux_class) &&
+        (mpegts_mux_is_submux(p) ?
+           mpegts_mux_in_pid(mm) && dvb_mux_pid_carrier_ok(p) :
+           !mpegts_mux_in_bbframes(mm) || ((dvb_mux_t *)p)->lm_multistream))
       return (dvb_mux_t *)p;
   }
   /* not while the muxes of the network are loaded: the transponder may
@@ -1403,6 +1424,20 @@ dvb_mux_submux_parent ( dvb_mux_t *sm )
       return (dvb_mux_t *)p;
     }
   return NULL;
+}
+
+/* a sub-mux in a PID found again in the mux (in a PMT): when what carried it
+ * is not found any more (deleted before the sub-muxes in it went with it; a
+ * sub-mux in an input stream has no other), the mux carries it now */
+void
+dvb_mux_submux_found ( dvb_mux_t *sm, mpegts_mux_t *mm )
+{
+  if (dvb_mux_submux_parent(sm) != NULL)
+    return;
+  tvhinfo(LS_MPEGTS, "%s: what carried it is gone, carried in %s now",
+          sm->mm_nicename, mm->mm_nicename);
+  dvb_mux_submux_link(sm, (dvb_mux_t *)mm);
+  mpegts_mux_update_nice_name((mpegts_mux_t *)sm);
 }
 
 /* the same tuning, member by member (the struct has padding) */
@@ -1492,8 +1527,11 @@ dvb_mux_submux_propagate ( dvb_mux_t *lm )
   mpegts_mux_t *p;
 
   LIST_FOREACH(p, &mm->mm_network->mn_muxes, mm_network_link)
-    if (mpegts_mux_is_submux(p) && dvb_mux_submux_parent((dvb_mux_t *)p) == lm)
+    if (mpegts_mux_is_submux(p) && dvb_mux_submux_parent((dvb_mux_t *)p) == lm) {
       dvb_mux_submux_sync((dvb_mux_t *)p);
+      /* and the sub-muxes it carries (a T2-MI stream in an input stream) */
+      dvb_mux_submux_propagate((dvb_mux_t *)p);
+    }
 }
 
 static htsmsg_t *
@@ -1550,6 +1588,16 @@ dvb_mux_display_name ( mpegts_mux_t *mm, char *buf, size_t len )
   dvb_network_t *ln = (dvb_network_t*)mm->mm_network;
   uint32_t freq = lm->lm_tuning.dmc_fe_freq, freq2;
   char extra[8], buf2[5], *p;
+  dvb_mux_t *parent;
+
+  /* a sub-mux in a sub-mux (a T2-MI stream in an input stream): the name
+   * of the sub-mux it is in, then what tells it apart */
+  if (mpegts_mux_in_pid(mm) && (parent = dvb_mux_submux_parent(lm)) != NULL &&
+      mpegts_mux_is_submux((mpegts_mux_t *)parent)) {
+    dvb_mux_display_name((mpegts_mux_t *)parent, buf, len);
+    dvb_mux_submux_name(mm, buf, len);
+    return;
+  }
 
   if (lm->lm_tuning.dmc_fe_type == DVB_TYPE_CABLECARD)
     snprintf(buf, len, "%u", lm->lm_tuning.u.dmc_fe_cablecard.vchannel);
@@ -1597,9 +1645,10 @@ dvb_mux_delete ( mpegts_mux_t *mm, int delconf )
   if (!delconf && mpegts_mux_is_submux(mm))
     dvb_mux_submux_sync((dvb_mux_t *)mm);
 
-  /* the sub-muxes of a transponder go with it: left behind, a sub-mux
-   * would keep its link to a mux that is gone */
-  if (!mpegts_mux_is_submux(mm)) {
+  /* the sub-muxes of a transponder go with it, and those of an input
+   * stream (a T2-MI stream in it): left behind, a sub-mux would keep its
+   * link to a mux that is gone */
+  if (!mpegts_mux_in_pid(mm)) {
     mpegts_mux_t *sub;
     while ((sub = dvb_mux_first_submux((dvb_mux_t *)mm)) != NULL)
       sub->mm_delete(sub, delconf);
