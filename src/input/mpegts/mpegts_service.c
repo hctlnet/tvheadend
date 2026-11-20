@@ -137,6 +137,100 @@ mpegts_service_class_get_type ( void *ptr )
   return &s;
 }
 
+/* read only, for the service grids: a short summary of the streams.
+ * The short name of a stream type for it, NULL: not listed */
+static const char *
+mpegts_service_stream_name ( streaming_component_type_t type )
+{
+  switch (type) {
+  case SCT_MPEG2VIDEO: return "MPEG-2";
+  case SCT_H264:       return "H.264";
+  case SCT_HEVC:       return "HEVC";
+  case SCT_MPEG2AUDIO: return "MP2";
+  case SCT_AC3:        return "AC-3";
+  case SCT_EAC3:       return "E-AC-3";
+  case SCT_AAC:
+  case SCT_MP4A:       return "AAC";
+  case SCT_AC4:        return "AC-4";
+  case SCT_DVBSUB:     return "DVB-Sub";
+  case SCT_TEXTSUB:    return "TXT-Sub";  /* teletext subtitles */
+  case SCT_TELETEXT:   return "TXT";
+  default:
+    if (SCT_ISAV(type))
+      return streaming_component_type2txt(type);
+    return NULL;
+  }
+}
+
+/* "H.264 1080 · MP2 ×2, AC-3, AD · DVB-Sub · TXT" */
+static const void *
+mpegts_service_class_get_streams ( void *ptr )
+{
+  static char buf[256];
+  static const char *s = buf;
+  service_t *t = ptr;
+  elementary_stream_t *st;
+  const char *names[3][8];
+  int counts[3][8] = { { 0 } }, n[3] = { 0 }, group, i, ad = 0, video = 0;
+  char vbuf[48] = "";
+  size_t l = 0;
+
+  buf[0] = '\0';
+  tvh_mutex_lock(&t->s_stream_mutex);
+  TAILQ_FOREACH(st, &t->s_components.set_all, es_link) {
+    const char *name = mpegts_service_stream_name(st->es_type);
+    if (name == NULL)
+      continue;
+    if (SCT_ISVIDEO(st->es_type)) {
+      if (video++ == 0) {
+        if (st->es_height > 0)
+          snprintf(vbuf, sizeof(vbuf), "%s %d", name, st->es_height);
+        else
+          snprintf(vbuf, sizeof(vbuf), "%s", name);
+      }
+      continue;
+    }
+    if (SCT_ISAUDIO(st->es_type)) {
+      group = 0;
+      if (st->es_audio_type == 3)   /* visual impaired commentary (ISO 639 descriptor) */
+        ad = 1;
+    } else {
+      group = SCT_ISSUBTITLE(st->es_type) ? 1 : 2;
+    }
+    for (i = 0; i < n[group] && strcmp(names[group][i], name); i++)
+      ;
+    if (i == n[group]) {
+      if (n[group] == 8)
+        continue;
+      names[group][n[group]++] = name;
+    }
+    counts[group][i]++;
+  }
+  tvh_mutex_unlock(&t->s_stream_mutex);
+
+  if (vbuf[0]) {
+    if (video > 1)
+      l = snprintf(buf, sizeof(buf), "%s +%d", vbuf, video - 1);
+    else
+      l = snprintf(buf, sizeof(buf), "%s", vbuf);
+  }
+  for (group = 0; group < 3; group++) {
+    if (n[group] == 0 || l >= sizeof(buf))
+      continue;
+    l += snprintf(buf + l, sizeof(buf) - l, "%s", l ? " · " : "");
+    for (i = 0; i < n[group] && l < sizeof(buf); i++) {
+      if (counts[group][i] > 1)
+        l += snprintf(buf + l, sizeof(buf) - l, "%s%s ×%d", i ? ", " : "",
+                      names[group][i], counts[group][i]);
+      else
+        l += snprintf(buf + l, sizeof(buf) - l, "%s%s", i ? ", " : "", names[group][i]);
+    }
+    if (group == 0 && ad && l < sizeof(buf))
+      l += snprintf(buf + l, sizeof(buf) - l, ", AD");
+  }
+  return &s;
+}
+
 CLASS_DOC(mpegts_service)
 PROP_DOC(eit_processing)
 
@@ -229,6 +323,16 @@ const idclass_t mpegts_service_class =
                      "other (as clients get it)."),
       .opts     = PO_RDONLY | PO_NOSAVE,
       .get      = mpegts_service_class_get_type,
+    },
+    {
+      .type     = PT_STR,
+      .id       = "streams",
+      .name     = N_("Streams"),
+      .desc     = N_("The streams of the service in short: video (codec, "
+                     "height), audio (AD: audio description), subtitles, "
+                     "teletext."),
+      .opts     = PO_RDONLY | PO_NOSAVE,
+      .get      = mpegts_service_class_get_streams,
     },
     {
       .type     = PT_STR,
