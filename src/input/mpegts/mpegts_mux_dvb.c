@@ -160,6 +160,18 @@ dvb_mux_class_dab_opts(void *o, uint32_t opts)
   return opts | PO_NOUI | PO_NOSAVE;
 }
 
+/* DAB in a PID (MPE, ETI-NA, TS NI) */
+static uint32_t
+dvb_mux_class_dab_pid_opts(void *o, uint32_t opts)
+{
+  const mpegts_mux_t *mm = o;
+  if (mm == NULL)
+    return opts | PO_HIDDEN;
+  if (mpegts_mux_is_dab(mm) && mpegts_mux_in_pid(mm))
+    return opts;
+  return opts | PO_NOUI | PO_NOSAVE;
+}
+
 static uint32_t
 dvb_mux_class_dab_eti_opts(void *o, uint32_t opts)
 {
@@ -439,6 +451,16 @@ const idclass_t dvb_mux_class =
       .off      = offsetof(dvb_mux_t, lm_dab_ensemble),
       .opts     = PO_RDONLY,
       .get_opts = dvb_mux_class_dab_opts,
+    },
+    {
+      .type     = PT_U32,
+      .id       = "dab_pmt_sid",
+      .name     = N_("Announced by"),
+      .desc     = N_("The service whose PMT lists the PID of the DAB "
+                     "ensemble (its SID; of several the lowest)."),
+      .off      = offsetof(dvb_mux_t, lm_dab_pmt_sid),
+      .opts     = PO_RDONLY,
+      .get_opts = dvb_mux_class_dab_pid_opts,
     },
     {
       .type     = PT_STR,
@@ -1564,6 +1586,25 @@ dvb_mux_pid_carrier_ok ( mpegts_mux_t *mm )
   return p != NULL && !mpegts_mux_is_submux((mpegts_mux_t *)p);
 }
 
+/* the PIDs of the mux with a DAB ensemble (ETI, TS NI) the DAB probe found
+ * in them: they carry no video, whatever their stream type says. For the
+ * PMT before it takes the stream lock: this goes through the muxes, and
+ * finding what carries a sub-mux may link it (global_lock) */
+int
+dvb_mux_dab_pids ( mpegts_mux_t *mm, uint16_t *pids, int max )
+{
+  mpegts_mux_t *sm;
+  int n = 0;
+
+  if (!idnode_is_instance(&mm->mm_id, &dvb_mux_class))
+    return 0;
+  LIST_FOREACH(sm, &mm->mm_network->mn_muxes, mm_network_link)
+    if ((sm->mm_type == MM_TYPE_DAB_ETI || sm->mm_type == MM_TYPE_DAB_TSNI) &&
+        n < max && dvb_mux_submux_parent((dvb_mux_t *)sm) == (dvb_mux_t *)mm)
+      pids[n++] = ((dvb_mux_t *)sm)->lm_tuning.dmc_fe_pid;
+  return n;
+}
+
 /* the mux a sub-mux is carried in: its transponder, or for a T2-MI stream
  * in an input stream that sub-mux; a configuration without the link (or
  * with the transponder gone) takes the mux of its frequency */
@@ -2421,6 +2462,42 @@ dvb_mux_transponder_scan_streams ( mpegts_mux_t *mm, int weight, int flags )
   tvhdebug(LS_MPEGTS, "%s - no tuner takes the multistream transponder as a whole: "
            "%d input stream(s) queued for a scan instead", mm->mm_nicename, n);
   dvb_mux_transponder_result(mm);
+}
+
+/*
+ * The PMT of a service lists the PIDs: a DAB ensemble in one of them of the
+ * mux is announced by the service. Of several services the one with the
+ * lowest SID (the same whatever the order of the PMTs, no save at every
+ * one), and one whose PMT lists the PID no more gives it up. Only shown
+ * with the ensemble - it is still carried in the PID, whatever the service
+ * (global_lock).
+ */
+void
+dvb_mux_dab_pmt_pids ( mpegts_mux_t *mm, const uint16_t *pids, int n, uint16_t sid )
+{
+  mpegts_mux_t *sm;
+  dvb_mux_t *lm;
+  uint32_t asid;
+  int i;
+
+  if (mm == NULL || !idnode_is_instance(&mm->mm_id, &dvb_mux_class))
+    return;
+  LIST_FOREACH(sm, &mm->mm_network->mn_muxes, mm_network_link) {
+    if (!mpegts_mux_is_dab(sm) || !mpegts_mux_in_pid(sm))
+      continue;
+    lm = (dvb_mux_t *)sm;
+    for (i = 0; i < n && pids[i] != lm->lm_tuning.dmc_fe_pid; i++)
+      ;
+    asid = lm->lm_dab_pmt_sid;
+    if (i < n && (asid == 0 || sid < asid))
+      asid = sid;
+    else if (i == n && asid == sid)
+      asid = 0;
+    if (asid == lm->lm_dab_pmt_sid || dvb_mux_submux_parent(lm) != (dvb_mux_t *)mm)
+      continue;
+    lm->lm_dab_pmt_sid = asid;
+    idnode_changed(&sm->mm_id);
+  }
 }
 
 void

@@ -55,6 +55,12 @@ typedef struct dvb_mux
   char *lm_dab_ensemble;
 
   /*
+   * DAB in a PID: the service whose PMT lists the PID (its SID; of
+   * several, the lowest; only shown)
+   */
+  uint32_t lm_dab_pmt_sid;
+
+  /*
    * A sub-mux: the uuid of the transponder it is carried in, whose tuning
    * it follows (dvb_mux_submux_sync())
    */
@@ -187,6 +193,9 @@ uint16_t   dvb_mux_stream_pid    ( mpegts_mux_t *mm );
 /* sub-muxes follow the tuning of the transponder they are carried in */
 dvb_mux_t *dvb_mux_submux_parent ( dvb_mux_t *sm );
 int        dvb_mux_pid_carrier_ok ( mpegts_mux_t *mm );
+int        dvb_mux_dab_pids ( mpegts_mux_t *mm, uint16_t *pids, int max );
+void       dvb_mux_dab_pmt_pids  ( mpegts_mux_t *mm, const uint16_t *pids, int n,
+                                   uint16_t sid );
 void       dvb_mux_submux_link   ( dvb_mux_t *sm, const dvb_mux_t *parent );
 void       dvb_mux_submux_found  ( dvb_mux_t *sm, mpegts_mux_t *mm );
 int        dvb_mux_submux_sync   ( dvb_mux_t *sm );
