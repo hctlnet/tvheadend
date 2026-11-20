@@ -16,6 +16,7 @@ import {
   muxSearchText,
   muxTypeName,
   scanEnabled,
+  scanPending,
   scanQueued,
   scanResultName,
   MUX_TYPE_ISI,
@@ -157,6 +158,20 @@ describe('scan state', () => {
     expect(scanEnabled(row(0, 0))).toBe(false)
     expect(scanEnabled(row(0, -1))).toBe(false)
     expect(scanEnabled({ uuid: 'm' })).toBe(true)
+  })
+})
+
+describe('scanPending', () => {
+  it('counts the muxes of all levels queued or being scanned, not those in the idle queue', () => {
+    const tree = buildMuxTree([
+      { uuid: 't', name: '12111V', multistream: true, scan_state: 0 },
+      { uuid: 'i1', name: '12111V ISI 1', parent_mux: 't', tstype: MUX_TYPE_ISI, stream_id: 1, scan_state: 1 },
+      { uuid: 'i3', name: '12111V ISI 3', parent_mux: 't', tstype: MUX_TYPE_ISI, stream_id: 3, scan_state: 2 },
+      { uuid: 'i4', name: '12111V ISI 4', parent_mux: 't', tstype: MUX_TYPE_ISI, stream_id: 4, scan_state: 3 },
+      { uuid: 'u', name: '11727V', scan_state: 1 },
+    ])
+    expect(scanPending(tree)).toBe(3)
+    expect(scanPending([])).toBe(0)
   })
 })
 
