@@ -580,6 +580,10 @@ struct mpegts_mux
    */
   void                       *mm_isi_probe_ctx;
 
+  /*
+   * GSE probe context (what a GSE stream carries, its DAB ensembles)
+   */
+  void                       *mm_gse_probe_ctx;
 
   /*
    * Functions
@@ -1324,6 +1328,19 @@ static inline int  mpegts_isi_probe_complete(mpegts_mux_t *mm, int evaluate) { r
 static inline int  mpegts_isi_probe_is_done(mpegts_mux_t *mm) { return 1; }
 #endif
 
+/*
+ * GSE probe: what a GSE stream (MM_TYPE_GSE) carries, kept with the mux,
+ * and its DAB ensembles (with libdvbdab). complete() gives the ensembles
+ * found, *content whether the stream carried GSE PDUs.
+ */
+#if ENABLE_MPEGTS_DVB
+void mpegts_gse_probe_start(mpegts_mux_t *mm);
+int  mpegts_gse_probe_complete(mpegts_mux_t *mm, int evaluate, int *content);
+#else
+static inline void mpegts_gse_probe_start(mpegts_mux_t *mm) { }
+static inline int  mpegts_gse_probe_complete(mpegts_mux_t *mm, int evaluate, int *content)
+  { *content = 0; return 0; }
+#endif
 
 #endif /* __TVH_MPEGTS_H__ */
 
