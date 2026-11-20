@@ -480,6 +480,7 @@ I18N-C += $(SRCS-IPTV)
 # DAB (Digital Audio Broadcasting) in DVB muxes - libdvbdab
 # (configure: dvbdab, flags come from pkg-config)
 SRCS-DAB = \
+	src/input/mpegts/dab/dab_logo.c \
 	src/input/mpegts/dab/dab_probe.c \
 	src/input/mpegts/dab/dab_stream.c
 SRCS-${CONFIG_DVBDAB} += $(SRCS-DAB)
