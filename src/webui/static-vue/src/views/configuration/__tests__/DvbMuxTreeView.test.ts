@@ -721,3 +721,132 @@ describe('DvbMuxTreeView "On" box', () => {
     expect((onBox(w, 'Das Erste HD').element as HTMLInputElement).checked).toBe(true)
   })
 })
+
+describe('DvbMuxTreeView scan button', () => {
+  const scanButton = (w: Wrapper, text: string) => rowOf(w, text).find('button.mux-tree__scan')
+
+  it('queues a scan of the mux, as its editor does', async () => {
+    const w = await mountTree()
+    await expand(w, 'Astra (1)')
+    await scanButton(w, '11494H').trigger('click')
+    await flushPromises()
+    expect(JSON.parse(String(calls('idnode/save')[0].node))).toEqual({ uuid: ['m1'], scan_state: 1 })
+  })
+
+  it('scans a mux in the idle scan queue', async () => {
+    const s = server()
+    s.muxes[0].scan_state = 2
+    const w = await mountTree(s)
+    await expand(w, 'Astra (1)')
+    expect(scanButton(w, '11494H').attributes('disabled')).toBeUndefined()
+  })
+
+  it('is off for a disabled mux and in a disabled network, and says why', async () => {
+    const s = server()
+    s.muxes[0].enabled = 0
+    s.networks[1].enabled = false
+    const w = await mountTree(s)
+    await expand(w, 'Astra (1)')
+    expect(scanButton(w, '11494H').attributes('disabled')).toBeDefined()
+    expect(scanButton(w, '11494H').attributes('title')).toContain('not enabled')
+    await expand(w, 'IPTV Automatic Network')
+    expect(scanButton(w, 'Channel One').attributes('disabled')).toBeDefined()
+    expect(scanButton(w, 'Channel One').attributes('title')).toContain('network is disabled')
+  })
+
+  it('times the next reload when the last one is done', async () => {
+    const s = server()
+    const w = await mountTree(s)
+    await expand(w, 'Astra (1)')
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval'] })
+    try {
+      /* queued: the poll goes on */
+      s.muxes[0].scan_state = 1
+      await scanButton(w, '11494H').trigger('click')
+      await flushPromises()
+      const before = calls('mpegts/mux/grid').length
+      const gate = holdMuxGrid(s)
+      await vi.advanceTimersByTimeAsync(2000)
+      expect(calls('mpegts/mux/grid')).toHaveLength(before + 1)
+      /* a slow server: no more reloads meanwhile */
+      await vi.advanceTimersByTimeAsync(6000)
+      expect(calls('mpegts/mux/grid')).toHaveLength(before + 1)
+      gate.stop()
+      await flushPromises()
+      expect(calls('mpegts/mux/grid')).toHaveLength(before + 1)
+      await vi.advanceTimersByTimeAsync(2000)
+      expect(calls('mpegts/mux/grid')).toHaveLength(before + 2)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('stops reloading when the scanned mux is back in the idle queue', async () => {
+    const s = server()
+    const w = await mountTree(s)
+    await expand(w, 'Astra (1)')
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval'] })
+    try {
+      s.muxes[0].scan_state = 1
+      await scanButton(w, '11494H').trigger('click')
+      await flushPromises()
+      const before = calls('mpegts/mux/grid').length
+      /* scanned: the mux rotates in the idle queue again */
+      s.muxes[0].scan_state = 2
+      await vi.advanceTimersByTimeAsync(2000)
+      expect(calls('mpegts/mux/grid')).toHaveLength(before + 1)
+      await vi.advanceTimersByTimeAsync(20000)
+      expect(calls('mpegts/mux/grid')).toHaveLength(before + 1)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+})
+
+describe('DvbMuxTreeView Scan of the selection', () => {
+  const select = (w: Wrapper, text: string) => rowOf(w, text).findAll('td.mux-tree__select-cell input')[0].trigger('click')
+
+  async function mountTwoSelected(s: FakeServer) {
+    const w = await mountTree(s)
+    await expand(w, 'Astra (1)')
+    await expand(w, 'IPTV Automatic Network')
+    await select(w, '11494H')
+    await select(w, 'Channel One')
+    return w
+  }
+
+  it('queues all the muxes in one request', async () => {
+    const w = await mountTwoSelected(server())
+    await button(w, 'Scan').trigger('click')
+    await flushPromises()
+    const saves = calls('idnode/save')
+    expect(saves).toHaveLength(1)
+    expect(JSON.parse(String(saves[0].node))).toEqual({ uuid: ['m1', 'i1'], scan_state: 1 })
+  })
+
+  it('leaves out a mux that is not enabled', async () => {
+    const s = server()
+    s.muxes[1].enabled = -1
+    const w = await mountTwoSelected(s)
+    await button(w, 'Scan').trigger('click')
+    await flushPromises()
+    expect(JSON.parse(String(calls('idnode/save')[0].node)).uuid).toEqual(['m1'])
+  })
+
+  it('follows the scans after a save that failed', async () => {
+    const s = server()
+    const w = await mountTwoSelected(s)
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval'] })
+    try {
+      s.gate = (ep) => (ep === 'idnode/save' ? Promise.reject(new Error('timeout')) : undefined)
+      s.muxes[0].scan_state = 1
+      await button(w, 'Scan').trigger('click')
+      await flushPromises()
+      const before = calls('mpegts/mux/grid').length
+      await vi.advanceTimersByTimeAsync(2000)
+      expect(calls('mpegts/mux/grid').length).toBeGreaterThan(before)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+})

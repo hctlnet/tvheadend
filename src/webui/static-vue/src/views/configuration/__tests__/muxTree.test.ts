@@ -15,6 +15,7 @@ import {
   filterTree,
   muxSearchText,
   muxTypeName,
+  scanEnabled,
   scanQueued,
   scanResultName,
   MUX_TYPE_ISI,
@@ -149,6 +150,13 @@ describe('scan state', () => {
     expect(scanQueued(row(1))).toBe(true)
     expect(scanQueued(row(2))).toBe(false)
     expect(scanQueued(row(3))).toBe(true)
+  })
+
+  it('scans the enabled muxes only', () => {
+    expect(scanEnabled(row(0, 1))).toBe(true)
+    expect(scanEnabled(row(0, 0))).toBe(false)
+    expect(scanEnabled(row(0, -1))).toBe(false)
+    expect(scanEnabled({ uuid: 'm' })).toBe(true)
   })
 })
 

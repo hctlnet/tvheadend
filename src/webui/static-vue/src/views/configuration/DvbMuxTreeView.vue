@@ -33,6 +33,10 @@
  * columns, Hide mode, column picker, phone layout. The toolbar
  * switches to it.
  *
+ * Scan: the button of a row queues a scan of its mux (`scan_state` =
+ * pending, as the mux editor does). The network is then reloaded every
+ * 2 s until these scans are over.
+ *
  * Services: expanding a mux shows its services (type, SID, CA systems,
  * channels) - right below it when it has no sub-muxes, else in a
  * "Services (n)" row of their own, collapsed, above the sub-muxes.
@@ -58,6 +62,7 @@ import {
   Pencil,
   Plus,
   RefreshCw,
+  ScanSearch,
   Trash2,
 } from 'lucide-vue-next'
 import IdnodeEditor from '@/components/IdnodeEditor.vue'
@@ -81,11 +86,13 @@ import {
   MUX_TYPE_TS,
   muxSearchText,
   muxTypeName,
+  scanEnabled,
   scanQueued,
   scanResultName,
   SCAN_RESULT_FAIL,
   SCAN_STATE_ACTIVE,
   SCAN_STATE_IPEND,
+  SCAN_STATE_PEND,
   SERVICE_FIELDS,
   servicesByMux,
   serviceTypeName,
@@ -107,6 +114,8 @@ const toast = useToastNotify()
 interface NetworkEntry {
   uuid: string
   name: string
+  /* a disabled network scans none of its muxes */
+  enabled: boolean
   /* its name in the rows of its muxes and services (`mn_display_name`:
    * "unknown" when it has none) */
   serverName: string
@@ -206,6 +215,7 @@ async function fetchNetworks() {
       .map((r) => ({
         uuid: String(r.uuid),
         name: String(r.networkname ?? r.uuid),
+        enabled: r.enabled !== false,
         serverName: r.networkname ? String(r.networkname) : 'unknown',
         numMux: Number(r.num_mux ?? 0),
         numSvc: Number(r.num_svc ?? 0),
@@ -556,6 +566,8 @@ type RowKind = 'mux' | 'service'
 interface RowEntry {
   kind: RowKind
   net: NetworkEntry
+  /* a mux: its row */
+  row?: MuxRow
 }
 
 const index = computed(() => {
@@ -563,7 +575,7 @@ const index = computed(() => {
   for (const net of networks.value) {
     const add = (nodes: MuxTreeNode[]) => {
       for (const n of nodes) {
-        map.set(n.row.uuid, { kind: 'mux', net })
+        map.set(n.row.uuid, { kind: 'mux', net, row: n.row })
         add(n.children)
       }
     }
@@ -719,6 +731,7 @@ function onNetworkPicked(uuid: string, name: string) {
     networks.value.find((n) => n.uuid === uuid) ?? {
       uuid,
       name,
+      enabled: true,
       serverName: name,
       numMux: 0,
       numSvc: 0,
@@ -774,6 +787,86 @@ async function onDelete() {
     refreshServices(net)
   }
 }
+
+/* scan: the muxes of the selection that a scan does something for */
+const selectedMuxes = computed(() =>
+  selection.value.filter((x) => x.kind === 'mux' && x.net.enabled && !!x.row && scanEnabled(x.row)),
+)
+
+function onScanSelection() {
+  const byNet = new Map<NetworkEntry, string[]>()
+  for (const x of selectedMuxes.value) byNet.set(x.net, [...(byNet.get(x.net) ?? []), x.uuid])
+  void scanMuxes(byNet)
+}
+
+/* Scans started here: their muxes per network, and the reload timers */
+const SCAN_POLL_MS = 2000
+const SCAN_POLL_MAX = 300 /* 10 min */
+const scanning = new Map<string, Set<string>>()
+const scanPolls = new Map<string, number>()
+
+/* the next reload is timed when one is done: no pile-up on a slow server */
+function pollScans(net: NetworkEntry) {
+  if (scanPolls.has(net.uuid)) return
+  let rounds = 0
+  const tick = async () => {
+    await loadMuxes(net, false)
+    /* stopped meanwhile: the view is gone */
+    if (!scanPolls.has(net.uuid)) return
+    const uuids = scanning.get(net.uuid) ?? new Set<string>()
+    /* the idle queue does not count: a mux rotates there for good */
+    const busy = (nodes: MuxTreeNode[]): boolean =>
+      nodes.some((n) => (uuids.has(n.row.uuid) && scanQueued(n.row)) || busy(n.children))
+    if (++rounds >= SCAN_POLL_MAX || !busy(trees.value[net.uuid] ?? [])) {
+      scanPolls.delete(net.uuid)
+      scanning.delete(net.uuid)
+      refreshServices(net)
+      return
+    }
+    scanPolls.set(net.uuid, window.setTimeout(tick, SCAN_POLL_MS))
+  }
+  scanPolls.set(net.uuid, window.setTimeout(tick, SCAN_POLL_MS))
+}
+
+async function scanRow(r: FlatRow) {
+  if (!r.node || !r.net) return
+  await scanMuxes(new Map([[r.net, [r.node.row.uuid]]]))
+}
+
+/* Queue the scans of these muxes (by network): one save for all of them
+ * (`scan_state` for a list of uuids, as the mux editor sets it), then
+ * each network reloads until its scans are over - after a failed save
+ * too, it may have queued some */
+async function scanMuxes(byNet: Map<NetworkEntry, string[]>) {
+  const uuids = [...byNet.values()].flat()
+  if (!uuids.length) return
+  try {
+    await apiCall('idnode/save', { node: JSON.stringify({ uuid: uuids, scan_state: SCAN_STATE_PEND }) })
+  } catch (e) {
+    toast.error(`${t('Failed to start scan')}: ${apiErrorMessage(e)}`)
+  }
+  for (const [net, list] of byNet) {
+    const set = scanning.get(net.uuid) ?? new Set<string>()
+    for (const u of list) set.add(u)
+    scanning.set(net.uuid, set)
+  }
+  await Promise.all([...byNet.keys()].map((net) => loadMuxes(net, false)))
+  for (const net of byNet.keys()) pollScans(net)
+}
+
+/* why the scan button of a row does nothing, '' when it does */
+function scanBlocked(r: FlatRow): string {
+  if (!r.node) return ''
+  if (r.net && !r.net.enabled) return t('The network is disabled: it scans no mux')
+  if (!scanEnabled(r.node.row)) return t('The mux is not enabled: a scan would be ignored')
+  if (scanQueued(r.node.row)) return t('Queued or scanning')
+  return ''
+}
+
+onBeforeUnmount(() => {
+  for (const id of scanPolls.values()) window.clearTimeout(id)
+  scanPolls.clear()
+})
 
 /* In the rows: enable. The change shows at once; when its save fails,
  * the old value is back and the network reloads. */
@@ -885,6 +978,10 @@ onMounted(loadNetworks)
         <Trash2 :size="14" :stroke-width="2" />
         {{ t('Delete') }}
       </Button>
+      <Button severity="secondary" outlined size="small" :disabled="!selectedMuxes.length" @click="onScanSelection">
+        <ScanSearch :size="14" :stroke-width="2" />
+        {{ t('Scan') }}
+      </Button>
       <span class="mux-tree__sep" />
       <Button severity="secondary" outlined size="small" @click="expandAll">
         {{ t('Expand all') }}
@@ -948,6 +1045,7 @@ onMounted(loadNetworks)
           <col class="mux-tree__col-count" />
           <col class="mux-tree__col-count" />
           <col class="mux-tree__col-on" />
+          <col class="mux-tree__col-action" />
         </colgroup>
         <thead>
           <tr>
@@ -966,6 +1064,7 @@ onMounted(loadNetworks)
             <th class="mux-tree__num">{{ t('Services') }}</th>
             <th class="mux-tree__num">{{ t('Channels') }}</th>
             <th class="mux-tree__select-cell" :title="t('Enabled')">{{ t('On') }}</th>
+            <th><span class="mux-tree__sr-only">{{ t('Scan') }}</span></th>
           </tr>
         </thead>
         <tbody>
@@ -1094,6 +1193,20 @@ onMounted(loadNetworks)
                 @dblclick.stop
               />
             </td>
+            <td class="mux-tree__action">
+              <button
+                v-if="r.node"
+                type="button"
+                class="mux-tree__scan"
+                :disabled="!!scanBlocked(r)"
+                :title="scanBlocked(r) || t('Scan this mux')"
+                :aria-label="t('Scan')"
+                @click.stop="scanRow(r)"
+                @dblclick.stop
+              >
+                <ScanSearch :size="15" :stroke-width="2" />
+              </button>
+            </td>
           </tr>
         </tbody>
       </table>
@@ -1208,6 +1321,10 @@ onMounted(loadNetworks)
   width: 78px;
 }
 
+.mux-tree__col-action {
+  width: 64px;
+}
+
 .mux-tree__col-select {
   width: 30px;
 }
@@ -1256,8 +1373,49 @@ onMounted(loadNetworks)
   color: var(--tvh-text);
 }
 
+.mux-tree__action {
+  text-align: center;
+}
+
+.mux-tree__scan {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.6rem;
+  height: 1.6rem;
+  padding: 0;
+  border: none;
+  border-radius: var(--tvh-radius-sm);
+  background: none;
+  color: var(--tvh-text-muted);
+  cursor: pointer;
+}
+
+.mux-tree__scan:hover:not(:disabled) {
+  color: var(--tvh-primary);
+  background: color-mix(in srgb, var(--tvh-primary) var(--tvh-hover-strength), transparent);
+}
+
+.mux-tree__scan:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+.mux-tree__scan:focus-visible {
+  outline: 2px solid var(--tvh-focus);
+}
+
 .mux-tree__busy {
   color: var(--tvh-primary);
+}
+
+.mux-tree__sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
 }
 
 .mux-tree__table th {
