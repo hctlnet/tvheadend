@@ -66,6 +66,7 @@ OPTIONS=(
   "uriparser:auto"
   "dvbdab:auto"
   "dvbdab_static:yes"
+  "dvbdab_transcode:auto"
   "ccache:auto"
   "tvhcsa:auto"
   "bundle:no"
@@ -917,6 +918,23 @@ fi
 if enabled dvbdab && ! enabled mpegts_dvb; then
   disable dvbdab
   disable dvbdab_static
+fi
+
+#
+# DAB+ transcoding in the libdvbdab built here: faad2 decodes the DAB+
+# audio (960 samples per frame), the libavcodec tvheadend is built with
+# encodes it as AAC-LC. (An installed libdvbdab has it or not.)
+#
+if enabled dvbdab_static && enabled_or_auto dvbdab_transcode; then
+  if enabled libav && check_pkg faad2; then
+    enable dvbdab_transcode
+  elif enabled dvbdab_transcode; then
+    die "DAB+ transcoding needs libav (FFmpeg) and faad2 (use --disable-dvbdab_transcode)"
+  else
+    disable dvbdab_transcode
+  fi
+else
+  disable dvbdab_transcode
 fi
 
 #

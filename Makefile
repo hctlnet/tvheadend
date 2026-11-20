@@ -91,6 +91,23 @@ CFLAGS  += -Wno-parentheses-equality
 endif
 
 
+# LIBDVBDAB ####################################################################
+#
+# libdvbdab and pugixml (Makefile.dvbdab): C++, so the C++ runtime as well.
+# Before the libraries of FFmpeg: with DAB+ transcoding libdvbdab uses
+# libavcodec, and static libraries are searched in the order they are named.
+#
+
+ifeq ($(CONFIG_DVBDAB_STATIC),yes)
+CFLAGS  += -I$(BUILDDIR)/dvbdab/build/include
+LDFLAGS += $(BUILDDIR)/dvbdab/build/lib/libdvbdab.a
+LDFLAGS += $(BUILDDIR)/dvbdab/build/lib/libpugixml.a
+ifeq ($(CONFIG_DVBDAB_TRANSCODE),yes)
+LDFLAGS += `$(PKG_CONFIG) --libs faad2`
+endif
+LDFLAGS += -lstdc++ -lz
+endif
+
 # LIBAV ########################################################################
 
 ifeq ($(CONFIG_LIBAV),yes)
@@ -173,14 +190,6 @@ endif
 ifeq ($(CONFIG_HDHOMERUN_STATIC),yes)
 CFLAGS  += -I$(BUILDDIR)/hdhomerun
 LDFLAGS += $(BUILDDIR)/hdhomerun/libhdhomerun/libhdhomerun.a
-endif
-
-# libdvbdab and pugixml (Makefile.dvbdab): C++, so the C++ runtime as well
-ifeq ($(CONFIG_DVBDAB_STATIC),yes)
-CFLAGS  += -I$(BUILDDIR)/dvbdab/build/include
-LDFLAGS += $(BUILDDIR)/dvbdab/build/lib/libdvbdab.a
-LDFLAGS += $(BUILDDIR)/dvbdab/build/lib/libpugixml.a
-LDFLAGS += -lstdc++ -lz
 endif
 
 vpath %.c $(ROOTDIR)
@@ -956,6 +965,11 @@ endif
 
 ${BUILDDIR}/libdvbdab_stamp: ${BUILDDIR}/dvbdab/build/lib/libdvbdab.a
 	@touch $@
+
+# with DAB+ transcoding it is built against the libavcodec of tvheadend
+ifeq ($(CONFIG_DVBDAB_TRANSCODE)$(CONFIG_FFMPEG_STATIC),yesyes)
+${BUILDDIR}/dvbdab/build/lib/libdvbdab.a: ${BUILDDIR}/libffmpeg_stamp
+endif
 
 ${BUILDDIR}/dvbdab/build/lib/libdvbdab.a: Makefile.dvbdab
 ifeq ($(CONFIG_PCLOUD_CACHE),yes)
