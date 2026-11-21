@@ -1,0 +1,157 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# Copyright (C) 2023 Olliver Schinagl <oliver@schinagl.nl>
+#
+# An image to try this fork without installing it: see "Quick test image of
+# this fork" in README.Docker.md. It differs from Containerfile.alpine in
+# what a test of the fork needs:
+#  - FFmpeg is the one tvheadend builds itself (the DAB+ transcoding and the
+#    stream profiles need it), with VAAPI
+#  - the Neumo driver API is compiled in; such a build runs on other drivers
+#    too, the features show up on frontends of a Neumo driver only
+#  - the web interface is built here, a plain clone is enough to build
+#  - libdvbcsa is built from a tree that has dvbcsa_bs_key_set_ecm(): without
+#    that function services whose keys depend on the ECM (VideoGuard ICAM)
+#    are not descrambled, and the package of the distribution lacks it
+#  - without arguments tvheadend takes its configuration from
+#    /var/lib/tvheadend
+
+ARG ALPINE_VERSION="latest"
+ARG TARGET_ARCH="library"
+
+FROM docker.io/${TARGET_ARCH}/alpine:${ALPINE_VERSION} AS builder
+
+# The headers of the Neumo driver API: two files, made from the templates of
+# the driver tree the way its Makefile makes them.
+ARG NEUMO_DRIVERS_REPO="hctlnet/neumo-drivers"
+ARG NEUMO_DRIVERS_REF="b62a310d27643127f63772695510b026c2856e1f"
+
+# libdvbcsa with dvbcsa_bs_key_set_ecm(); SSE2 is there on every x86-64 CPU
+ARG LIBDVBCSA_REPO="oe-mirrors/libdvbcsa"
+ARG LIBDVBCSA_REF="6c459854e737f3149666b3f842fbbe6eca9551eb"
+ARG LIBDVBCSA_OPTIONS="--enable-sse2"
+
+WORKDIR /src
+
+COPY . /src/
+
+ENV CFLAGS="-I/neumo-uapi"
+
+RUN apk add --no-cache \
+        'autoconf' \
+        'automake' \
+        'avahi-dev' \
+        'bash' \
+        'bsd-compat-headers' \
+        'build-base' \
+        'cmake' \
+        'coreutils' \
+        'dbus-dev' \
+        'diffutils' \
+        'findutils' \
+        'gettext-dev' \
+        'git' \
+        'gnu-libiconv-dev' \
+        'libhdhomerun-dev' \
+        'libtool' \
+        'libva-dev' \
+        'linux-headers' \
+        'musl-dev' \
+        'nodejs' \
+        'npm' \
+        'openssl-dev>3' \
+        'patch' \
+        'pcre2' \
+        'perl' \
+        'pkgconf' \
+        'pngquant' \
+        'py3-requests' \
+        'python3' \
+        'tar' \
+        'uriparser-dev' \
+        'wget' \
+        'xz' \
+        'zlib-dev' \
+    && \
+    mkdir -p '/neumo-uapi/linux/dvb' && \
+    for header in 'frontend' 'dmx'; do \
+        wget -q -O "/tmp/common-${header}.h" \
+             "https://raw.githubusercontent.com/${NEUMO_DRIVERS_REPO}/${NEUMO_DRIVERS_REF}/neumo/templates/common-${header}.h" && \
+        sed -e 's/common_//g' -e 's/neumo_//g' -e 's/COMMON_//g' -e 's/NEUMO_//g' \
+            "/tmp/common-${header}.h" > "/neumo-uapi/linux/dvb/${header}.h" || \
+        exit 1; \
+    done && \
+    wget -q -O '/tmp/libdvbcsa.tar.gz' \
+         "https://github.com/${LIBDVBCSA_REPO}/archive/${LIBDVBCSA_REF}.tar.gz" && \
+    mkdir '/tmp/libdvbcsa' && \
+    tar -xzf '/tmp/libdvbcsa.tar.gz' -C '/tmp/libdvbcsa' --strip-components=1 && \
+    ( cd '/tmp/libdvbcsa' && \
+      ./bootstrap && \
+      ./configure --prefix='/usr' ${LIBDVBCSA_OPTIONS} && \
+      make -j$(($(nproc) - 1)) && \
+      make install ) && \
+    install -d '/tvheadend/usr/lib' && \
+    cp -a /usr/lib/libdvbcsa.so.* '/tvheadend/usr/lib/' && \
+    git config --global --add safe.directory '/src' && \
+    git config --global --add safe.directory '/src/data/dvb-scan' && \
+    ./configure \
+                --prefix='/usr/local' \
+                --disable-doc \
+                --disable-execinfo \
+                --disable-hdhomerun_static \
+                --enable-bundle \
+                --enable-dvbcsa \
+                --enable-hdhomerun_client \
+                --enable-kqueue \
+                --enable-linuxdvb_neumo \
+                --enable-pngquant \
+                --enable-vaapi \
+                --enable-vue_build \
+                --python=python3 \
+        && \
+        make -j$(($(nproc) - 1)) && \
+        make DESTDIR='/tvheadend' install
+
+FROM docker.io/${TARGET_ARCH}/alpine:${ALPINE_VERSION} AS runner
+
+EXPOSE 9981 \
+       9982 \
+       9983
+
+RUN apk add --no-cache \
+        'avahi' \
+        'bzip2' \
+        'dbus-libs' \
+        'gnu-libiconv-libs' \
+        'intel-media-driver' \
+        'libcrypto3' \
+        'libhdhomerun-libs' \
+        'libssl3' \
+        'liburiparser' \
+        'libva' \
+        'libva-intel-driver' \
+        'mesa-va-gallium' \
+        'perl-http-entity-parser' \
+        'pngquant' \
+        'pcre2' \
+        'python3' \
+        'tini' \
+        'xmltv' \
+        'zlib' \
+    && \
+    addgroup -S 'tvheadend' && \
+    adduser -D -G 'tvheadend' -h '/var/lib/tvheadend' -s '/bin/nologin' -S 'tvheadend' && \
+    adduser 'tvheadend' 'audio' && \
+    adduser 'tvheadend' 'video' && \
+    install -d -m 775 -g 'tvheadend' -o 'tvheadend' '/var/lib/tvheadend/recordings' && \
+    install -d -m 775 -g 'tvheadend' -o 'tvheadend' '/var/log/tvheadend'
+
+COPY --from=builder "/tvheadend" "/"
+COPY "./support/container-entrypoint.sh" "/init"
+
+VOLUME /var/lib/tvheadend
+WORKDIR /var/lib/tvheadend/
+USER tvheadend
+
+ENTRYPOINT [ "/sbin/tini", "--", "/init" ]
+CMD [ "--config", "/var/lib/tvheadend" ]

@@ -5,6 +5,52 @@ and in-depth tutorial on docker, those with Docker, containers or cgroups see
 [docker.com][docker].
 
 
+## Quick test image of this fork
+To try this fork without installing it, there is an image built from
+`Containerfile.quicktest`. It brings its own FFmpeg (DAB+ transcoding, stream
+profiles, VAAPI) and has the Neumo driver API compiled in. The DVB driver is
+the one of the host: the image runs on any driver, the Neumo features show up
+on frontends of a Neumo driver only.
+
+It needs the DVB devices and a **copy** of a configuration:
+
+```sh
+# the configuration directory of the installed tvheadend, wherever it is
+cp -a "${HOME}/.hts/tvheadend" '/tmp/tvh-quicktest'
+
+docker run --rm \
+    --device '/dev/dvb' \
+    --user "$(id -u):$(id -g)" \
+    --group-add "$(stat -c '%g' '/dev/dvb/adapter0/frontend0')" \
+    --volume '/tmp/tvh-quicktest:/var/lib/tvheadend:rw' \
+    --publish '9981-9982:9981-9982/tcp' \
+    'ghcr.io/hctlnet/tvheadend:quicktest'
+```
+
+The web interface is at port 9981, with the users of the copied configuration.
+Arguments after the image name replace the default `--config
+/var/lib/tvheadend`.
+
+  * `--user` is whoever owns the copy, `--group-add` the group of the DVB
+    device nodes. Without access to them tvheadend finds no adapter and does
+    not say why.
+  * A frontend serves one tvheadend at a time, and tvheadend keeps its
+    frontends open unless power saving is set. Stop the installed one for the
+    test; next to a running one the container logs `unable to open
+    /dev/dvb/adapterN/frontend0` and has no tuner.
+  * The copy is a second tvheadend with everything the first one does:
+    scheduled recordings (`dvr`), logins at card servers (`caclient`), IPTV
+    connections (`input/iptv`) and the muxes kept warm for instant zapping.
+    Remove from the copy what must not happen twice.
+  * Files outside the configuration directory are not in the container:
+    playlists, picons or scripts given by path.
+  * For VAAPI add `--device '/dev/dri'` and a second `--group-add` with the
+    group of `/dev/dri/renderD128`.
+  * The image is built by hand (workflow *Quick test image*) from `main`, for
+    amd64. To build it yourself:
+    `docker build --file 'Containerfile.quicktest' --tag 'tvheadend:quicktest' './'`
+
+
 ## Building the TVHeadend image
 While it is recommended to pull the image from the [GHCR][ghcr] (GitHub
 Container Registry), it is certainly possible to build the image locally.
