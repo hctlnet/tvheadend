@@ -639,11 +639,13 @@ linuxdvb_en50494_lock_cable ( tvh_mutex_t *lock )
 
 /*
  * Public tune function. The elements of a Unicable group share one cable:
- * their commands go out one at a time (the group's lock), those of the slaves
- * through the master's frontend and with its LNB voltage - for tuners that
- * cannot drive the cable themselves (a splitter where only one of them powers
- * the LNB). Without a usable master a slave sends itself. An element without
- * a group locks against all others.
+ * their commands go out one at a time (the group's lock) - so no two masters
+ * of a group ever send at once. A master sends itself; a slave sends through
+ * the frontend of a master and with its LNB voltage (the lowest open one,
+ * linuxdvb_unicable_find_master()) - for tuners that cannot drive the cable
+ * themselves (a splitter where only some of them power the LNB). Without a
+ * usable master a slave sends itself. An element without a group locks
+ * against all others.
  */
 static int
 linuxdvb_en50494_tune
