@@ -71,6 +71,33 @@ static tvh_mutex_t linuxdvb_en50494_lock;
 static linuxdvb_unicable_group_list_t linuxdvb_unicable_groups;
 static tvh_mutex_t linuxdvb_unicable_groups_lock;
 
+/* the element of the tuner that marks it as a master of the group, or NULL */
+static linuxdvb_satconf_ele_t *
+linuxdvb_unicable_master_ele ( linuxdvb_frontend_t *lfe, uint16_t group_id )
+{
+  linuxdvb_satconf_ele_t *lse;
+  const linuxdvb_en50494_t *le;
+
+  if (lfe->lfe_type != DVB_TYPE_S || !lfe->lfe_satconf)
+    return NULL;
+  TAILQ_FOREACH(lse, &lfe->lfe_satconf->ls_elements, lse_link) {
+    le = (const linuxdvb_en50494_t *)lse->lse_en50494;
+    if (le && le->le_group_id == group_id && le->le_is_master)
+      return lse;
+  }
+  return NULL;
+}
+
+/* a has the lower number: adapter, then frontend */
+static int
+linuxdvb_unicable_fe_before
+  ( const linuxdvb_frontend_t *a, const linuxdvb_frontend_t *b )
+{
+  if (a->lfe_adapter->la_dvb_number != b->lfe_adapter->la_dvb_number)
+    return a->lfe_adapter->la_dvb_number < b->lfe_adapter->la_dvb_number;
+  return a->lfe_number < b->lfe_number;
+}
+
 /*
  * The master of a unicable group: of the tuners marked as master the one
  * with the lowest number (adapter, then frontend) whose device is open - a
@@ -94,24 +121,13 @@ linuxdvb_unicable_find_master ( linuxdvb_unicable_group_t *group, int *masters )
       continue;
     la = (linuxdvb_adapter_t *)th;
     LIST_FOREACH(lfe, &la->la_frontends, lfe_link) {
-      if (lfe->lfe_type != DVB_TYPE_S || !lfe->lfe_satconf)
+      lse = linuxdvb_unicable_master_ele(lfe, group->lug_group_id);
+      if (lse == NULL)
         continue;
-      TAILQ_FOREACH(lse, &lfe->lfe_satconf->ls_elements, lse_link) {
-        if (!lse->lse_en50494)
-          continue;
-        linuxdvb_en50494_t *le = (linuxdvb_en50494_t *)lse->lse_en50494;
-        if (le->le_group_id != group->lug_group_id || !le->le_is_master)
-          continue;
-        (*masters)++;
-        if (lfe->lfe_fe_fd > 0 &&
-            (mfe == NULL ||
-             la->la_dvb_number < mfe->lfe_adapter->la_dvb_number ||
-             (la->la_dvb_number == mfe->lfe_adapter->la_dvb_number &&
-              lfe->lfe_number < mfe->lfe_number))) {
-          master = lse;
-          mfe = lfe;
-        }
-        break;                        /* a tuner counts once, not per element */
+      (*masters)++;
+      if (lfe->lfe_fe_fd > 0 && (mfe == NULL || linuxdvb_unicable_fe_before(lfe, mfe))) {
+        master = lse;
+        mfe = lfe;
       }
     }
   }
