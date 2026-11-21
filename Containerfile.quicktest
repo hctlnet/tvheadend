@@ -10,6 +10,9 @@
 #  - the Neumo driver API is compiled in; such a build runs on other drivers
 #    too, the features show up on frontends of a Neumo driver only
 #  - the web interface is built here, a plain clone is enough to build
+#  - libdvbcsa is built from a tree that has dvbcsa_bs_key_set_ecm(): without
+#    that function services whose keys depend on the ECM (VideoGuard ICAM)
+#    are not descrambled, and the package of the distribution lacks it
 #  - without arguments tvheadend takes its configuration from
 #    /var/lib/tvheadend
 
@@ -22,6 +25,11 @@ FROM docker.io/${TARGET_ARCH}/alpine:${ALPINE_VERSION} AS builder
 # the driver tree the way its Makefile makes them.
 ARG NEUMO_DRIVERS_REPO="hctlnet/neumo-drivers"
 ARG NEUMO_DRIVERS_REF="b62a310d27643127f63772695510b026c2856e1f"
+
+# libdvbcsa with dvbcsa_bs_key_set_ecm(); SSE2 is there on every x86-64 CPU
+ARG LIBDVBCSA_REPO="oe-mirrors/libdvbcsa"
+ARG LIBDVBCSA_REF="6c459854e737f3149666b3f842fbbe6eca9551eb"
+ARG LIBDVBCSA_OPTIONS="--enable-sse2"
 
 WORKDIR /src
 
@@ -44,7 +52,6 @@ RUN apk add --no-cache \
         'gettext-dev' \
         'git' \
         'gnu-libiconv-dev' \
-        'libdvbcsa-dev' \
         'libhdhomerun-dev' \
         'libtool' \
         'libva-dev' \
@@ -74,6 +81,17 @@ RUN apk add --no-cache \
             "/tmp/common-${header}.h" > "/neumo-uapi/linux/dvb/${header}.h" || \
         exit 1; \
     done && \
+    wget -q -O '/tmp/libdvbcsa.tar.gz' \
+         "https://github.com/${LIBDVBCSA_REPO}/archive/${LIBDVBCSA_REF}.tar.gz" && \
+    mkdir '/tmp/libdvbcsa' && \
+    tar -xzf '/tmp/libdvbcsa.tar.gz' -C '/tmp/libdvbcsa' --strip-components=1 && \
+    ( cd '/tmp/libdvbcsa' && \
+      ./bootstrap && \
+      ./configure --prefix='/usr' ${LIBDVBCSA_OPTIONS} && \
+      make -j$(($(nproc) - 1)) && \
+      make install ) && \
+    install -d '/tvheadend/usr/lib' && \
+    cp -a /usr/lib/libdvbcsa.so.* '/tvheadend/usr/lib/' && \
     git config --global --add safe.directory '/src' && \
     git config --global --add safe.directory '/src/data/dvb-scan' && \
     ./configure \
@@ -107,7 +125,6 @@ RUN apk add --no-cache \
         'gnu-libiconv-libs' \
         'intel-media-driver' \
         'libcrypto3' \
-        'libdvbcsa' \
         'libhdhomerun-libs' \
         'libssl3' \
         'liburiparser' \
