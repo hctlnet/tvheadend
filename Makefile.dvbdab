@@ -89,7 +89,9 @@ build: $(LIB_ROOT)/$(LIBDVBDAB)/.tvh_build
 # ###########################################################################
 
 # static, position independent (tvheadend may be linked as a PIE), into
-# $(EPREFIX); only the libraries: no tests, no tools
+# $(EPREFIX); only the libraries: no tests, no tools. The installs below
+# clear DESTDIR: with "make DESTDIR=... install" (packaging, the container
+# files) it is the root tvheadend installs to, not that of these libraries
 CMAKE_OPTS := \
 		-G "Unix Makefiles" \
 		-DCMAKE_BUILD_TYPE=Release \
@@ -112,7 +114,7 @@ $(LIB_ROOT)/$(PUGIXML)/.tvh_build: \
 	cd $(LIB_ROOT)/$(PUGIXML) && cmake $(CMAKE_OPTS) \
 		-DPUGIXML_BUILD_TESTS=OFF \
 		-S . -B tvh-build
-	$(MAKE) -C $(LIB_ROOT)/$(PUGIXML)/tvh-build install
+	$(MAKE) -C $(LIB_ROOT)/$(PUGIXML)/tvh-build install DESTDIR=
 	@touch $@
 
 #
@@ -129,7 +131,7 @@ $(LIB_ROOT)/$(FAAD2)/.tvh_build: \
 	cd $(LIB_ROOT)/$(FAAD2) && cmake $(CMAKE_OPTS) \
 		-DFAAD_BUILD_CLI=OFF \
 		-S . -B tvh-build
-	$(MAKE) -C $(LIB_ROOT)/$(FAAD2)/tvh-build install
+	$(MAKE) -C $(LIB_ROOT)/$(FAAD2)/tvh-build install DESTDIR=
 	@touch $@
 
 #
@@ -169,7 +171,7 @@ $(LIB_ROOT)/$(LIBDVBDAB)/.tvh_build: \
 		-DDVBDAB_TRANSCODE=$(DVBDAB_TRANSCODE) \
 		-S . -B tvh-build
 	$(MAKE) -C $(LIB_ROOT)/$(LIBDVBDAB)/tvh-build dvbdab
-	cd $(LIB_ROOT)/$(LIBDVBDAB) && cmake --install tvh-build
+	cd $(LIB_ROOT)/$(LIBDVBDAB) && DESTDIR= cmake --install tvh-build
 	@touch $@
 
 .PHONY: static_libdvbdab_clean
