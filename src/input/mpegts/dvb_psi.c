@@ -162,6 +162,16 @@ dvberr:
   return priv;
 }
 
+/* TSID 0 is a real one for the mux: the option of the mux, or of its DVB
+ * network (all its muxes) */
+static int
+mpegts_mux_tsid_zero_ok(mpegts_mux_t *mm)
+{
+  return mm->mm_tsid_accept_zero_value ||
+         (mm->mm_network && idnode_is_instance(&mm->mm_network->mn_id, &dvb_network_class) &&
+          ((dvb_network_t *)mm->mm_network)->ln_tsid_accept_zero);
+}
+
 static int
 mpegts_mux_tsid_check(mpegts_mux_t *mm, mpegts_table_t *mt, uint16_t tsid)
 {
@@ -170,7 +180,7 @@ mpegts_mux_tsid_check(mpegts_mux_t *mm, mpegts_table_t *mt, uint16_t tsid)
    * hand) takes it from the PAT, otherwise no SDT would ever be accepted */
   if (mpegts_mux_is_dab(mm) && mm->mm_tsid != MPEGTS_TSID_NONE)
     return 0;
-  if (tsid == 0 && !mm->mm_tsid_accept_zero_value) {
+  if (tsid == 0 && !mpegts_mux_tsid_zero_ok(mm)) {
     if (tvhlog_limit(&mm->mm_tsid_loglimit, 2)) {
       tvhwarn(mt->mt_subsys, "%s: %s: TSID zero value detected, ignoring", mt->mt_name, mm->mm_nicename);
     }
