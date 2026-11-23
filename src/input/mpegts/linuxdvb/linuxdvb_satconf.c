@@ -1149,14 +1149,21 @@ linuxdvb_satconf_ele_tune ( linuxdvb_satconf_ele_t *lse )
     int rf_result = ioctl(lfe->lfe_fe_fd, FE_SET_RF_INPUT, &ic);
     int rf_errno = errno;
     /* this tuner sets up the input (tvh found it free), yet the driver makes
-     * it a slave: an idle demod still holds the input (its device stayed
-     * open) - close it and reserve again. With Unicable a slave is normal */
+     * it a slave: an idle demod still holds the input. Its device stayed
+     * open - close it - or it was closed a moment ago: the driver frees the
+     * input only when the frontend thread of a closed device has gone to
+     * sleep, some 10 ms later (the last tuner on the input stopped and the
+     * next mux, of the other polarisation, starts at once). Reserve again
+     * either way: as a slave the tuner may not change the voltage, and every
+     * mux waiting for the input would fail within that moment. With Unicable
+     * a slave is normal */
     if (rf_result == FE_RESERVATION_SLAVE && !lse->lse_en50494 &&
-        ls->ls_rf_retries < LINUXDVB_RF_RETRIES &&
-        linuxdvb_frontend_rf_input_release(lfe, 1) > 0) {
+        ls->ls_rf_retries < LINUXDVB_RF_RETRIES) {
+      int closed = linuxdvb_frontend_rf_input_release(lfe, 1);
       ls->ls_rf_retries++;
-      tvhdebug(LS_DISEQC, "RF input %d still held by an idle tuner, released, trying again",
-               rf_input_to_use);
+      tvhdebug(LS_DISEQC, "RF input %d still held by an idle tuner (%d device(s) closed now), "
+               "trying again (%d/%d)", rf_input_to_use, closed, ls->ls_rf_retries,
+               LINUXDVB_RF_RETRIES);
       mtimer_arm_rel(&ls->ls_rf_timer, linuxdvb_satconf_rf_retry_cb, ls,
                      ms2mono(LINUXDVB_RF_RETRY_MS));
       return 0;
