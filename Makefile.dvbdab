@@ -49,11 +49,11 @@ FAAD2_TB        = $(FAAD2).tar.gz
 FAAD2_URL       = https://github.com/knik0/faad2/archive/refs/tags/$(FAAD2_VER).tar.gz
 FAAD2_SHA1      = 33d160135a02a6dcf66948d678435552512c1a9b
 
-LIBDVBDAB_VER   = 2.8.0
+LIBDVBDAB_VER   = 2.9.0
 LIBDVBDAB       = libdvbdab-$(LIBDVBDAB_VER)
 LIBDVBDAB_TB    = $(LIBDVBDAB).tar.gz
 LIBDVBDAB_URL   = https://github.com/hctlnet/libdvbdab/archive/refs/tags/v$(LIBDVBDAB_VER).tar.gz
-LIBDVBDAB_SHA1  = 8226155bf1d6a77f7e5cb179e0a074eb69377294
+LIBDVBDAB_SHA1  = 11ebf9581e239aafade343c15065b0d391e9c7a2
 
 # ###########################################################################
 # Library Config
