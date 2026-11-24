@@ -45,13 +45,14 @@
 /* the dvr buffer for a multistream transponder: all of its streams */
 #define LINUXDVB_BBFRAMES_DVR_BUFFER (16 * 1024 * 1024)
 
-/* a multistream transponder tuned so that all input streams come */
+/* a multistream transponder tuned so that all input streams come; a GSE
+ * mux (the single stream of its transponder is no TS) comes in BBFrames too */
 static int
 linuxdvb_frontend_bbframes_mux ( linuxdvb_frontend_t *lfe, mpegts_mux_t *mm )
 {
   return lfe->lfe_supports_bbframes && mm != NULL &&
          idnode_is_instance(&mm->mm_id, &dvb_mux_class) &&
-         ((dvb_mux_t *)mm)->lm_multistream;
+         (((dvb_mux_t *)mm)->lm_multistream || mpegts_mux_gse_transponder(mm));
 }
 #endif
 
@@ -709,6 +710,30 @@ linuxdvb_frontend_rf_input_in_setup ( linuxdvb_frontend_t *master )
 }
 #endif
 
+/* how the transponder of a mux comes tells whether this frontend delivers
+ * the mux. BBFrames come from a Neumo frontend only (lfe_supports_bbframes
+ * is never set without that driver) */
+static int
+linuxdvb_frontend_delivers ( const linuxdvb_frontend_t *lfe, mpegts_mux_t *mm )
+{
+  const dvb_mux_t *lm = idnode_is_instance(&mm->mm_id, &dvb_mux_class) ? (dvb_mux_t *)mm : NULL;
+
+  /* a multistream transponder delivers its input streams as BBFrames (others
+   * tune the streams themselves) */
+  if (lm && lm->lm_multistream && !lfe->lfe_supports_bbframes)
+    return 0;
+  /* ... the input streams of a multistream transponder come from it then
+   * (the sub-mux input) */
+  if (mm->mm_type == MM_TYPE_ISI && lfe->lfe_supports_bbframes)
+    return 0;
+  /* a GSE mux: the single stream of its transponder, in BBFrames (the GSE
+   * stream of a multistream transponder comes from that one) */
+  if (mm->mm_type == MM_TYPE_GSE &&
+      (!lfe->lfe_supports_bbframes || !mpegts_mux_gse_transponder(mm)))
+    return 0;
+  return 1;
+}
+
 static int
 linuxdvb_frontend_is_enabled
   ( mpegts_input_t *mi, mpegts_mux_t *mm, int flags, int weight )
@@ -728,19 +753,8 @@ linuxdvb_frontend_is_enabled
     return MI_IS_ENABLED_NEVER;
   if (mm == NULL)
     return MI_IS_ENABLED_OK;
-  /* a multistream transponder delivers its input streams as BBFrames (only a
-   * Neumo frontend; others tune the streams themselves) */
-  if (idnode_is_instance(&mm->mm_id, &dvb_mux_class) && ((dvb_mux_t *)mm)->lm_multistream) {
-#if ENABLE_LINUXDVB_NEUMO
-    if (!lfe->lfe_supports_bbframes)
-#endif
-      return MI_IS_ENABLED_NEVER;
-  }
-#if ENABLE_LINUXDVB_NEUMO
-  /* ... and its input streams come from it (the sub-mux input) */
-  if (mm->mm_type == MM_TYPE_ISI && lfe->lfe_supports_bbframes)
+  if (!linuxdvb_frontend_delivers(lfe, mm))
     return MI_IS_ENABLED_NEVER;
-#endif
   if (lfe->lfe_in_setup)
     return MI_IS_ENABLED_RETRY;
 #if ENABLE_LINUXDVB_NEUMO
@@ -947,6 +961,7 @@ linuxdvb_frontend_stop_mux
   lfe->lfe_locked  = 0;
   lfe->lfe_status  = 0;
   lfe->lfe_status2 = 0;
+  lfe->lfe_matype  = -1;
 
   /* Ensure it won't happen immediately */
   mtimer_arm_rel(&lfe->lfe_monitor_timer, linuxdvb_frontend_monitor, lfe, sec2mono(2));
@@ -1188,8 +1203,9 @@ linuxdvb_frontend_update_pids
   if (mm->mm_dab_probe_ctx || mm->mm_pidstats)
     lfe->lfe_pids.all = 1;
 #if ENABLE_LINUXDVB_NEUMO
-  /* the ISI probe reads the headers of the BBFrames */
-  if (mm->mm_isi_probe_ctx && lfe->lfe_bbframes)
+  /* the ISI probe reads the headers of the BBFrames, the GSE probe of a GSE
+   * mux the frames */
+  if ((mm->mm_isi_probe_ctx || mm->mm_gse_probe_ctx) && lfe->lfe_bbframes)
     mpegts_pid_add(&lfe->lfe_pids, DVB_BBFRAMES_PID, MPS_WEIGHT_RAW);
 #endif
   tvh_mutex_unlock(&lfe->lfe_dvr_lock);
@@ -1575,7 +1591,9 @@ linuxdvb_frontend_blindscan_update_freq(linuxdvb_frontend_t *lfe, dvb_mux_t *lm)
 /*
  * The MATYPE and MODCOD of the DVB-S2 stream to the mux (global_lock),
  * shown read only at the mux; saved when they change. The MODCOD of an
- * ACM/VCM stream changes from frame to frame: not kept.
+ * ACM/VCM stream changes from frame to frame: not kept. The frontend keeps
+ * the MATYPE of this tune (the one of the mux can be from an earlier one),
+ * unless it is tuned for BBFrames.
  */
 static void
 linuxdvb_frontend_stream_info ( linuxdvb_frontend_t *lfe, mpegts_mux_t *mm )
@@ -1606,6 +1624,13 @@ linuxdvb_frontend_stream_info ( linuxdvb_frontend_t *lfe, mpegts_mux_t *mm )
     return;
   /* known: again in 30 s */
   lfe->lfe_stream_info = mclk() + sec2mono(30);
+  /* tuned for BBFrames the demodulator has the stream type of a generic
+   * stream forced to TS (the driver makes it load the frames into packets
+   * so): not the MATYPE of the stream, the mux keeps the one it has */
+  if (!lfe->lfe_bbframes)
+    lfe->lfe_matype = matype;
+  else if ((matype >> 6) == 3 && lm->lm_matype >= 0 && (lm->lm_matype >> 6) != 3)
+    matype = lm->lm_matype;
   modcod = matype >= 0 && (matype & 0x10) && props[1].u.data < 0x20 ? (int)props[1].u.data : 0;
   if (matype == lm->lm_matype && modcod == lm->lm_modcod)
     return;
@@ -1861,8 +1886,13 @@ linuxdvb_frontend_monitor ( void *aux )
       int params_read = 0, blind = 0;
 
 #if ENABLE_LINUXDVB_NEUMO
-      /* the MATYPE is valid a while after the lock */
+      /* the MATYPE is valid a while after the lock: read then, not a
+       * status period later (the demodulator may have lost a stream that
+       * is no TS by then) */
       lfe->lfe_stream_info = mclk() + sec2mono(2);
+      if (lfe->lfe_neumo_supported && lfe->lfe_type == DVB_TYPE_S && period > 2050)
+        mtimer_arm_rel(&lfe->lfe_monitor_timer, linuxdvb_frontend_monitor,
+                       lfe, ms2mono(2050));
       /* Update mux parameters from blindscan results if enabled */
       if (lfe->lfe_type == DVB_TYPE_S && ((dvb_mux_t *)mm)->lm_blindscan_tune) {
         /* a tune asked for from a blindscan: the carrier found makes the mux */
@@ -2480,6 +2510,7 @@ linuxdvb_frontend_clear
   lfe->lfe_locked  = 0;
   lfe->lfe_status  = 0;
   lfe->lfe_status2 = 0;
+  lfe->lfe_matype  = -1;
   lfe->lfe_search_failed = 0;
   lfe->lfe_search_status = 0;
   lfe->lfe_search_fails = 0;
@@ -3276,8 +3307,9 @@ linuxdvb_frontend_create
   lfe->ti_wizard_get          = linuxdvb_frontend_wizard_get;
   lfe->ti_wizard_set          = linuxdvb_frontend_wizard_set;
   lfe->mi_is_enabled          = linuxdvb_frontend_is_enabled;
-  /* an input stream of a multistream transponder: tuned with its stream */
-  lfe->mi_mux_types          |= (1u << MM_TYPE_ISI);
+  /* an input stream of a multistream transponder: tuned with its stream;
+   * a GSE mux that is the single stream of its transponder: in BBFrames */
+  lfe->mi_mux_types          |= (1u << MM_TYPE_ISI) | (1u << MM_TYPE_GSE);
   lfe->mi_warm_mux            = linuxdvb_frontend_warm_mux;
   lfe->mi_start_mux           = linuxdvb_frontend_start_mux;
   lfe->mi_stop_mux            = linuxdvb_frontend_stop_mux;

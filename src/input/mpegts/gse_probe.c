@@ -27,6 +27,10 @@
  * with libdvbdab). At the end what the stream carried stays with the mux
  * (dvb_mux_set_gse_content()); a stream of 188 byte user packets is no GSE
  * but a TS: the mux becomes a TS sub-mux.
+ * The GSE mux of a transponder whose single input stream is GSE is the mux
+ * of the transponder itself (mpegts_mux_gse_transponder()): its tuner
+ * delivers the BBFrames, all of them are its stream. When the transponder
+ * sends a TS or several input streams again, it becomes a TS mux again.
  */
 
 #include "tvheadend.h"
@@ -91,7 +95,8 @@ gse_probe_set_cb ( mpegts_mux_t *mm, gse_probe_t *p )
 }
 
 /* the GSE mux of a stream of 188 byte user packets: a TS sub-mux, scanned
- * again (a tasklet: the scan of it ends now) */
+ * again (a tasklet: the scan of it ends now); the GSE mux of a transponder
+ * that sends a TS or input streams again: a TS mux, as it was */
 static void
 gse_probe_to_ts_cb ( void *aux, int disarmed )
 {
@@ -101,7 +106,16 @@ gse_probe_to_ts_cb ( void *aux, int disarmed )
   if (!disarmed) {
     tvh_mutex_lock(&global_lock);
     mm = mpegts_mux_find(uuid);
-    if (mm && mm->mm_type == MM_TYPE_GSE) {
+    if (mm && mpegts_mux_gse_transponder(mm)) {
+      tvhinfo(LS_MPEGTS, "%s - a TS or several input streams, not a single GSE "
+              "stream: a TS mux again", mm->mm_nicename);
+      mm->mm_type = MM_TYPE_TS;
+      mm->mm_scan_result = MM_SCAN_NONE;
+      dvb_mux_set_gse_content((dvb_mux_t *)mm, NULL);
+      mpegts_mux_update_nice_name(mm);
+      mpegts_network_scan_queue_add(mm, SUBSCRIPTION_PRIO_SCAN_INIT,
+                                    SUBSCRIPTION_INITSCAN, 10);
+    } else if (mm && mm->mm_type == MM_TYPE_GSE) {
       tvhinfo(LS_MPEGTS, "%s - a TS stream (188 byte user packets), not GSE: "
               "a TS sub-mux now", mm->mm_nicename);
       mm->mm_type = MM_TYPE_ISI;
@@ -114,6 +128,18 @@ gse_probe_to_ts_cb ( void *aux, int disarmed )
     tvh_mutex_unlock(&global_lock);
   }
   free(uuid);
+}
+
+/* frames of input streams (multistream) among the frames */
+static int
+gse_probe_has_isis ( const gse_stats_result_t *r )
+{
+  size_t i;
+
+  for (i = 0; i < sizeof(r->isis); i++)
+    if (r->isis[i])
+      return 1;
+  return 0;
 }
 
 /* the scan of a GSE mux starts */
@@ -138,7 +164,60 @@ mpegts_gse_probe_start ( mpegts_mux_t *mm )
     gse_stats_tap(p->gs, gse_probe_pdu, p);
   mm->mm_gse_probe_ctx = p;
   gse_probe_set_cb(mm, p);
+  /* the mux of the transponder itself: its tuner opens the PID of the
+   * BBFrames for the probe (a sub-mux gets them from the sub-mux input) */
+  if (mpegts_mux_gse_transponder(mm)) {
+    mm->mm_update_pids_flag = 1;
+    mpegts_mux_update_pids(mm);
+  }
   tvhdebug(LS_MPEGTS, "%s - GSE probe started", mm->mm_nicename);
+}
+
+/* what the frames of the stream say: the mux is no GSE mux (any more), it is
+ * made a TS mux then (gse_probe_to_ts_cb()) */
+static int
+gse_probe_not_gse ( mpegts_mux_t *mm, const gse_stats_result_t *r )
+{
+  const uint64_t frames = r->frames[0] + r->frames[1] + r->frames[2] + r->frames[3];
+  char ubuf[UUID_HEX_SIZE];
+  int ts;
+
+  if (frames == 0)
+    return 0;
+  /* not GSE: a generic stream of 188 byte user packets is a TS one (16E
+   * 12677.964V: generic continuous, UPL 1504, PAT, PMT, SDT). The mux of
+   * a transponder stays GSE with such a stream (as it is tuned it had no
+   * tables, that made it one); it is a TS mux again when most frames are
+   * TS ones, or frames are of input streams (a multistream transponder
+   * now: the ISI probe of its scan as a TS mux finds them) */
+  if (mpegts_mux_gse_transponder(mm))
+    ts = r->frames[3] * 2 > frames || gse_probe_has_isis(r);
+  else
+    ts = r->frames_upl * 2 > frames && r->upl == 188 * 8;
+  if (!ts)
+    return 0;
+  tasklet_arm_alloc(gse_probe_to_ts_cb, strdup(idnode_uuid_as_str(&mm->mm_id, ubuf)));
+  return 1;
+}
+
+/* what the stream carried (m: the message of it, NULL none) in the log, and
+ * with the mux when keep */
+static void
+gse_probe_content ( mpegts_mux_t *mm, htsmsg_t *m, int keep )
+{
+  char buf[256];
+
+  if (m) {
+    gse_stats_msg_text(m, buf, sizeof(buf));
+    tvhinfo(LS_MPEGTS, "%s - %s", mm->mm_nicename, buf);
+    if (keep)
+      dvb_mux_set_gse_content((dvb_mux_t *)mm, m);
+    else
+      htsmsg_destroy(m);
+  } else if (keep) {
+    tvhinfo(LS_MPEGTS, "%s - no BBFrames of the stream", mm->mm_nicename);
+    dvb_mux_set_gse_content((dvb_mux_t *)mm, NULL);
+  }
 }
 
 /* the scan of the GSE mux ended: what the stream carried (when evaluate,
@@ -148,11 +227,9 @@ int
 mpegts_gse_probe_complete ( mpegts_mux_t *mm, int evaluate, int *content )
 {
   gse_probe_t *p = mm->mm_gse_probe_ctx;
-  gse_stats_result_t *r = NULL;
+  gse_stats_result_t *r;
   htsmsg_t *m = NULL;
-  uint64_t frames;
   int found;
-  char buf[256];
 
   *content = 0;
   if (p == NULL)
@@ -162,33 +239,23 @@ mpegts_gse_probe_complete ( mpegts_mux_t *mm, int evaluate, int *content )
   /* the input thread is not inside the probe after this */
   if (mm->mm_secondary_ctx == p)
     gse_probe_set_cb(mm, NULL);
+  if (mpegts_mux_gse_transponder(mm) && mm->mm_active) {
+    mm->mm_update_pids_flag = 1;
+    mpegts_mux_update_pids(mm);
+  }
 
-  if (evaluate && (r = malloc(sizeof(*r))) != NULL) {
+  r = evaluate ? malloc(sizeof(*r)) : NULL;
+  if (r != NULL) {
     gse_stats_get(p->gs, r);
-    frames = r->frames[0] + r->frames[1] + r->frames[2] + r->frames[3];
-    if ((m = gse_stats_msg(r)) != NULL)
+    m = gse_stats_msg(r);
+    if (m != NULL)
       htsmsg_add_s64(m, "us", p->last - p->first);
-    /* not GSE: a generic stream of 188 byte user packets is a TS one (16E
-     * 12677.964V: generic continuous, UPL 1504, PAT, PMT, SDT) */
-    if (frames && r->frames_upl * 2 > frames && r->upl == 188 * 8) {
-      char ubuf[UUID_HEX_SIZE];
-      tasklet_arm_alloc(gse_probe_to_ts_cb, strdup(idnode_uuid_as_str(&mm->mm_id, ubuf)));
+    if (gse_probe_not_gse(mm, r))
       evaluate = 0;
-    }
     *content = evaluate && r->gse.pdus > 0;
     free(r);
   }
-  if (m) {
-    gse_stats_msg_text(m, buf, sizeof(buf));
-    tvhinfo(LS_MPEGTS, "%s - %s", mm->mm_nicename, buf);
-    if (evaluate)
-      dvb_mux_set_gse_content((dvb_mux_t *)mm, m);
-    else
-      htsmsg_destroy(m);
-  } else if (evaluate) {
-    tvhinfo(LS_MPEGTS, "%s - no BBFrames of the stream", mm->mm_nicename);
-    dvb_mux_set_gse_content((dvb_mux_t *)mm, NULL);
-  }
+  gse_probe_content(mm, m, evaluate);
 
   found = gse_dab_probe_finish(p->dab, evaluate);
   gse_stats_destroy(p->gs);

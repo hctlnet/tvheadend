@@ -327,14 +327,21 @@ export function shortName(name: string, parentName: string | undefined): string 
   return name
 }
 
+/* the type a node is sorted by: a mux carried in nothing is a transponder,
+ * whatever it is (a TS, or GSE when its single input stream is: it stands
+ * among the others by its name, not after them) */
+function sortType(n: MuxTreeNode): number {
+  return n.row.parent_mux ? (n.row.tstype ?? MUX_TYPE_TS) : MUX_TYPE_TS
+}
+
 /* input streams by ISI, then the others by type and name */
 function compareNodes(a: MuxTreeNode, b: MuxTreeNode): number {
   const ai = a.isi !== null && isInputStream(a.row)
   const bi = b.isi !== null && isInputStream(b.row)
   if (ai !== bi) return ai ? -1 : 1
   if (ai && bi && a.isi !== b.isi) return (a.isi ?? 0) - (b.isi ?? 0)
-  const at = a.row.tstype ?? MUX_TYPE_TS
-  const bt = b.row.tstype ?? MUX_TYPE_TS
+  const at = sortType(a)
+  const bt = sortType(b)
   if (!ai && at !== bt) return at - bt
   return collator.compare(a.label, b.label)
 }

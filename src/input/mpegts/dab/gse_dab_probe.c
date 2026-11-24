@@ -42,7 +42,8 @@ gse_format_ip_str(char *buf, size_t len, uint32_t ip)
 
 /*
  * Create the DAB-GSE mux of an ensemble: a sub-mux of the transponder, in
- * the input stream of the GSE mux
+ * the input stream of the GSE mux (the GSE mux of a single stream is the
+ * transponder)
  */
 static dvb_mux_t *
 gse_create_child_mux(mpegts_mux_t *mm, dvb_network_t *ln,
@@ -56,7 +57,8 @@ gse_create_child_mux(mpegts_mux_t *mm, dvb_network_t *ln,
     return NULL;
 
   dab_mux->mm_type = MM_TYPE_DAB_GSE;
-  t = dvb_mux_submux_parent((dvb_mux_t *)mm);
+  t = mpegts_mux_gse_transponder(mm) ? (dvb_mux_t *)mm
+                                     : dvb_mux_submux_parent((dvb_mux_t *)mm);
   if (t)
     dvb_mux_submux_link(dab_mux, t);
 

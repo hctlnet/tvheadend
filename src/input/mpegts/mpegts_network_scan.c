@@ -670,8 +670,10 @@ mpegts_network_scan_mux_done0
    * or its tuner taken), the mux may be going away */
   dab_found = mpegts_dab_probe_complete(mm, result != MM_SCAN_NONE);
 
-  /* Complete ISI probe (a multistream transponder: its streams) */
-  dab_found += mpegts_isi_probe_complete(mm, result != MM_SCAN_NONE);
+  /* Complete ISI probe (a multistream transponder: its streams; a mux
+   * without tables whose single stream is no TS becomes a GSE mux) */
+  dab_found += mpegts_isi_probe_complete(mm, result != MM_SCAN_NONE,
+                                         result == MM_SCAN_FAIL);
 
   /* Complete GSE probe (a GSE stream: what it carries, its DAB ensembles) */
   dab_found += mpegts_gse_probe_complete(mm, result != MM_SCAN_NONE, &gse_content);
@@ -683,7 +685,10 @@ mpegts_network_scan_mux_done0
     /* a GSE stream that carried PDUs was read: what it carries is kept
      * with the mux (GSE content), DAB or not */
     result = dab_found > 0 || gse_content ? MM_SCAN_OK : MM_SCAN_FAIL;
-    if (dab_found > 0)
+    if (mm->mm_type == MM_TYPE_GSE && type0 != MM_TYPE_GSE)
+      /* the ISI probe made it a GSE mux: its scan as one follows (below) */
+      tvhinfo(LS_MPEGTS, "%s - scan complete, scanned again as a GSE mux", mm->mm_nicename);
+    else if (dab_found > 0)
       tvhinfo(LS_MPEGTS, "%s - scan complete, %d %s%s", mm->mm_nicename,
               dab_found, what, dab_found == 1 ? "" : "s");
     else if (gse_content)
@@ -780,7 +785,9 @@ mpegts_network_scan_mux_done0
     mpegts_network_scan_queue_add(mm, weight, mm->mm_scan_flags, 10);
   /* the GSE-DAB probe made this GSE mux the first ensemble it found: this
    * scan read the GSE stream, the ensemble's services need a scan of its
-   * own (not when the scan was cancelled - the mux may be going away) */
+   * own (not when the scan was cancelled - the mux may be going away); the
+   * same for a mux that became a GSE mux (the ISI probe), or a TS mux again
+   * (the GSE probe) */
   else if (result != MM_SCAN_NONE && mm->mm_type != type0)
     mpegts_network_scan_queue_add(mm, SUBSCRIPTION_PRIO_SCAN_INIT,
                                   SUBSCRIPTION_INITSCAN, 10);
