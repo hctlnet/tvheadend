@@ -771,7 +771,8 @@ dvb_network_find_overlap
 }
 
 /* a sub-mux of this type on the same transponder, in the same PID (T2MI:
- * of the PLP, if one is set; DAB-MPE: from the same IP source) */
+ * of the PLP, if one is set; DAB-MPE, a TS in IP: of the same group and
+ * port) */
 static int
 dvb_network_submux_match
   ( const mpegts_mux_t *mm, const dvb_mux_conf_t *dmc, int type )
@@ -789,7 +790,7 @@ dvb_network_submux_match
     return 0;
   if (type == MM_TYPE_T2MI && dmc->dmc_t2mi_plp_set)
     return c->dmc_t2mi_plp_set && c->dmc_t2mi_plp == dmc->dmc_t2mi_plp;
-  if (type == MM_TYPE_DAB_MPE)
+  if (type == MM_TYPE_DAB_MPE || type == MM_TYPE_IPTS_MPE || type == MM_TYPE_IPTS_GSE)
     return c->dmc_dab_ip == dmc->dmc_dab_ip && c->dmc_dab_port == dmc->dmc_dab_port;
   return 1;
 }

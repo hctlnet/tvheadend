@@ -100,9 +100,10 @@ typedef struct dvb_mux
   int lm_multistream;
 
   /*
-   * A GSE stream (MM_TYPE_GSE): what it carried at its last scan, the
-   * message of gse_stats_msg() with the microseconds it covers ("us");
-   * NULL not known
+   * What the mux carried at its last scan besides its services: a GSE
+   * stream (MM_TYPE_GSE) the message of gse_stats_msg(), a TS with MPE
+   * PIDs the one of the DAB probe ("mpe", see mpe_stats_msg_text()), with
+   * the microseconds it covers ("us"); NULL not known, or nothing
    */
   htsmsg_t *lm_gse_content;
 
@@ -260,6 +261,9 @@ int        dvb_mux_submux_sync   ( dvb_mux_t *sm );
 /* what the GSE stream of lm carried (a message of gse_stats_msg(), lm takes
  * it; NULL: not known) - global_lock */
 void       dvb_mux_set_gse_content ( dvb_mux_t *lm, htsmsg_t *m );
+struct ip_stats;
+int        dvb_mux_ipts_scan     ( mpegts_mux_t *carrier, uint16_t pid,
+                                   const struct ip_stats *ip );
 
 uint32_t   dvb_mux_tuning_key ( const dvb_mux_conf_t *dmc );
 void       dvb_mux_tuning_confirmed ( dvb_mux_t *lm, int src );

@@ -18,9 +18,9 @@
  */
 
 /*
- * A sub-mux (a T2-MI stream or a DAB ensemble in a PID of a transponder, an
- * input stream of a multistream transponder in its BBFrames) is not tuned
- * itself.
+ * A sub-mux (a T2-MI stream, a DAB ensemble or a TS in IP in a PID of a
+ * transponder, an input stream of a multistream transponder in its
+ * BBFrames) is not tuned itself.
  * The sub-mux input starts it with a raw subscription on its transponder, the
  * parent, for the PID the sub-mux is carried in. The stream of the sub-mux
  * is made of that PID on a thread of the sub-mux and goes into the normal
@@ -40,6 +40,9 @@
 #include "input/mpegts/bbframe.h"
 #include "input/mpegts/mpegts_network_scan.h"
 #include "input/mpegts/t2mi.h"
+#include "input/mpegts/gse_bbframes.h"
+#include "input/mpegts/mpe.h"
+#include "input/mpegts/ip_ts.h"
 
 /* bytes the queue of a sub-mux takes before it drops (the parent's tuner
  * does not wait for the sub-mux thread); an input stream gets all the
@@ -62,6 +65,9 @@ typedef struct mpegts_submux {
   sbuf_t                 sm_in;     /* packets of that PID */
   bbframe_split_t       *sm_bbf;    /* an input stream: out of the BBFrames */
   t2mi_t                *sm_t2mi;   /* T2MI: the TS out of the PID */
+  ip_ts_t               *sm_ipts;   /* a TS in IP: out of the datagrams of its group */
+  gse_bbframes_t        *sm_gb;     /* ... the IP packets out of GSE */
+  mpe_t                 *sm_mpe;    /* ... or out of the MPE sections of the PID */
   sbuf_t                 sm_out;    /* their TS */
   int                    sm_cc;     /* the continuity counter of the PID */
   uint64_t               sm_packets;
@@ -183,6 +189,64 @@ submux_input_stream ( mpegts_submux_t *sm, const uint8_t *data, size_t len )
     mpegts_input_recv_packets(sm->sm_mmi, &sm->sm_out, MPEGTS_DATA_DECAPSULATED, NULL);
 }
 
+/* a TS in IP: the IPv4 packets of the GSE stream or of the MPE PID, the TS
+ * packets of the datagrams of its group */
+static void
+submux_ipts_out ( void *opaque, const uint8_t *ts, size_t len )
+{
+  mpegts_submux_t *sm = opaque;
+
+  sbuf_append(&sm->sm_out, ts, len);
+}
+
+static void
+submux_ipts_pdu ( void *opaque, const gse_pdu_t *pdu )
+{
+  mpegts_submux_t *sm = opaque;
+
+  if (pdu->protocol_type == 0x0800)
+    ip_ts_ipv4(sm->sm_ipts, pdu->data, pdu->len);
+}
+
+static void
+submux_ipts_datagram ( void *opaque, const mpe_datagram_t *d )
+{
+  mpegts_submux_t *sm = opaque;
+
+  if (d->ethertype == 0x0800)
+    ip_ts_ipv4(sm->sm_ipts, d->data, d->len);
+}
+
+static void
+submux_ipts_stream ( mpegts_submux_t *sm, const uint8_t *data, size_t len )
+{
+  for ( ; len >= 188; data += 188, len -= 188) {
+    if (!submux_packet(sm, data))
+      continue;
+    if (sm->sm_gb)
+      gse_bbframes_feed(sm->sm_gb, data, 188, sm->sm_pid);
+    else
+      mpe_feed(sm->sm_mpe, data, 188, sm->sm_pid, submux_ipts_datagram, sm);
+  }
+  if (sm->sm_out.sb_ptr > 0)
+    mpegts_input_recv_packets(sm->sm_mmi, &sm->sm_out, MPEGTS_DATA_DECAPSULATED, NULL);
+}
+
+/* a TS in IP starts: what unpacks its group from the GSE stream or from the
+ * MPE PID; -1 no memory */
+static int
+submux_ipts_start ( mpegts_submux_t *sm, const mpegts_mux_t *mm )
+{
+  const dvb_mux_conf_t *dmc = &((const dvb_mux_t *)mm)->lm_tuning;
+
+  sm->sm_ipts = ip_ts_create(dmc->dmc_dab_ip, dmc->dmc_dab_port, submux_ipts_out, sm);
+  if (mm->mm_type == MM_TYPE_IPTS_GSE)
+    sm->sm_gb = gse_bbframes_create(dmc->dmc_fe_stream_id, submux_ipts_pdu, sm);
+  else
+    sm->sm_mpe = mpe_create();
+  return sm->sm_ipts != NULL && (sm->sm_gb != NULL || sm->sm_mpe != NULL) ? 0 : -1;
+}
+
 /* the transponder cannot be tuned: the sub-mux fails now, not after its
  * grace time. Not with a wait for the global lock: the stop of the sub-mux
  * holds it while it joins this thread (it clears sm_run first - then the
@@ -221,6 +285,10 @@ submux_process ( mpegts_submux_t *sm, streaming_message_t *msg )
     }
     if (sm->sm_bbf && mmi->mmi_mux->mm_type == MM_TYPE_ISI) {
       submux_input_stream(sm, data, len);
+      break;
+    }
+    if (sm->sm_ipts) {
+      submux_ipts_stream(sm, data, len);
       break;
     }
     /* the packets of the PID; of a GSE stream: those of its frames, as
@@ -354,6 +422,17 @@ submux_free ( mpegts_submux_t *sm )
     t2mi_done(sm->sm_t2mi);
     free(sm->sm_t2mi);
   }
+  if (sm->sm_ipts) {
+    const ip_ts_counts_t *c = ip_ts_counts(sm->sm_ipts);
+    tvhdebug(LS_MPEGTS, "%s - %"PRIu64" datagrams of its group, %"PRIu64" TS packets, "
+             "%"PRIu64" datagrams without a TS, %"PRIu64" fragments, %"PRIu64" RTP "
+             "packets lost", sm->sm_mmi->mmi_mux->mm_nicename, c->datagrams, c->packets,
+             c->other, c->fragments, c->rtp_lost);
+    ip_ts_destroy(sm->sm_ipts);
+  }
+  gse_bbframes_destroy(sm->sm_gb);
+  if (sm->sm_mpe)
+    mpe_destroy(sm->sm_mpe);
   sbuf_free(&sm->sm_in);
   sbuf_free(&sm->sm_out);
   if (sm->sm_packets)
@@ -667,6 +746,11 @@ submux_input_start_mux ( mpegts_input_t *mi, mpegts_mux_instance_t *mmi, int wei
     sm->sm_bbf = malloc(sizeof(*sm->sm_bbf));
     bbframe_split_init(sm->sm_bbf, ((dvb_mux_t *)mm)->lm_tuning.dmc_fe_stream_id);
   }
+  if (mpegts_mux_is_ipts(mm) && submux_ipts_start(sm, mm)) {
+    streaming_queue_init(&sm->sm_sq, 0, SUBMUX_QUEUE_SIZE);
+    submux_free(sm);
+    return SM_CODE_TUNING_FAILED;
+  }
   if (mm->mm_type == MM_TYPE_T2MI) {
     dvb_mux_t *lm = (dvb_mux_t *)mm;
     sm->sm_t2mi = malloc(sizeof(*sm->sm_t2mi));
@@ -808,7 +892,8 @@ mpegts_submux_init ( void )
   if (mi == NULL)
     return;
   mi->mi_enabled       = 1;
-  mi->mi_mux_types     = (1u << MM_TYPE_ISI) | (1u << MM_TYPE_T2MI);
+  mi->mi_mux_types     = (1u << MM_TYPE_ISI) | (1u << MM_TYPE_T2MI) |
+                         (1u << MM_TYPE_IPTS_MPE) | (1u << MM_TYPE_IPTS_GSE);
 #if ENABLE_DVBDAB
   mi->mi_mux_types    |= (1u << MM_TYPE_DAB_MPE) | (1u << MM_TYPE_DAB_ETI) |
                          (1u << MM_TYPE_DAB_TSNI) |

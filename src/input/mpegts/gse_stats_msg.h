@@ -37,4 +37,12 @@ htsmsg_t *gse_stats_msg ( const gse_stats_result_t *r );
  * has the microseconds ("us") it covers */
 void gse_stats_msg_text ( htsmsg_t *m, char *buf, size_t len );
 
+/* one line of what the MPE PIDs of a TS carried: a message with "mpe" (a
+ * list of its PIDs: pid, datagrams, ...), ip_stats_msg() of the IP packets
+ * of all of them and "us" */
+void mpe_stats_msg_text ( htsmsg_t *m, char *buf, size_t len );
+
+/* one line of the content of a mux: of the one or the other message */
+void content_msg_text ( htsmsg_t *m, char *buf, size_t len );
+
 #endif /* __TVH_GSE_STATS_MSG_H__ */

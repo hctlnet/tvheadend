@@ -18,28 +18,37 @@
  */
 
 #include "ip_stats.h"
+#include "ip_ts.h"
 
 #include <string.h>
 #include <stdlib.h>
 
+/* the first datagrams of a group tell what it carries: one that is cut or
+ * of another kind may come first */
+#define IP_FLOW_KIND_PACKETS 8
+
 /* what a UDP payload is */
 static ip_flow_kind_t
-ip_udp_kind ( const uint8_t *d, size_t n, int *rtp_pt )
+ip_udp_kind ( const uint8_t *d, size_t n, int *rtp_pt, int *ts_hdr )
 {
-  size_t h;
+  size_t off;
 
-  *rtp_pt = -1;
-  if (n >= 188 && n % 188 == 0 && d[0] == 0x47 && (n == 188 || d[188] == 0x47))
-    return IP_FLOW_TS;
+  *ts_hdr = 0;
+  if (ip_ts_payload(d, n, &off, rtp_pt)) {
+    if (*rtp_pt >= 0)
+      return IP_FLOW_RTP_TS;
+    /* after a header of the sender: three packets tell a group (two sync
+     * bytes may be chance among the first datagrams of many groups) */
+    if (off == 0 || n - off >= 3 * 188) {
+      *ts_hdr = (int)off;
+      return IP_FLOW_TS;
+    }
+    return IP_FLOW_UDP;
+  }
   if (n >= 2 && (d[0] == 'A' || d[0] == 'P') && d[1] == 'F')
     return IP_FLOW_EDI;
   if (n >= 12 && (d[0] >> 6) == 2) {
     *rtp_pt = d[1] & 0x7f;
-    h = 12 + 4 * (size_t)(d[0] & 0x0f);
-    if ((d[0] & 0x10) && h + 4 <= n)
-      h += 4 + 4 * (((size_t)d[h + 2] << 8) | d[h + 3]);
-    if (h < n && (n - h) % 188 == 0 && d[h] == 0x47)
-      return IP_FLOW_RTP_TS;
     return IP_FLOW_RTP;
   }
   return IP_FLOW_UDP;
@@ -69,9 +78,11 @@ ip_flow ( ip_stats_t *s, int v6, const uint8_t *addr, uint16_t port,
     f->v6 = v6;
     memcpy(f->addr, addr, alen);
     f->port = port;
-    f->kind = ip_udp_kind(payload, n, &f->rtp_pt);
+    f->rtp_pt = -1;
   }
   f = &s->flows[i];
+  if (f->kind == IP_FLOW_UDP && f->packets < IP_FLOW_KIND_PACKETS)
+    f->kind = ip_udp_kind(payload, n, &f->rtp_pt, &f->ts_hdr);
   f->packets++;
   f->bytes += n;
 }
@@ -132,6 +143,52 @@ ip_stats_ipv6 ( ip_stats_t *s, const uint8_t *d, size_t n )
   } else {
     ip_add(&s->v6_unicast_other, tot);
     ip_add(&s->unicast_protos[d[6]], tot);
+  }
+}
+
+static void
+ip_sum ( ip_count_t *s, const ip_count_t *o )
+{
+  s->packets += o->packets;
+  s->bytes += o->bytes;
+}
+
+void
+ip_stats_add ( ip_stats_t *s, const ip_stats_t *o )
+{
+  const ip_flow_t *of;
+  ip_flow_t *f;
+  int i;
+  int j;
+
+  ip_sum(&s->v4_multicast, &o->v4_multicast);
+  ip_sum(&s->v4_broadcast, &o->v4_broadcast);
+  ip_sum(&s->v4_unicast_udp, &o->v4_unicast_udp);
+  ip_sum(&s->v4_unicast_tcp, &o->v4_unicast_tcp);
+  ip_sum(&s->v4_unicast_other, &o->v4_unicast_other);
+  ip_sum(&s->v6_multicast, &o->v6_multicast);
+  ip_sum(&s->v6_unicast_udp, &o->v6_unicast_udp);
+  ip_sum(&s->v6_unicast_tcp, &o->v6_unicast_tcp);
+  ip_sum(&s->v6_unicast_other, &o->v6_unicast_other);
+  for (i = 0; i < 256; i++)
+    ip_sum(&s->unicast_protos[i], &o->unicast_protos[i]);
+  s->flows_other += o->flows_other;
+  for (i = 0; i < o->nflows; i++) {
+    of = &o->flows[i];
+    for (j = 0; j < s->nflows; j++) {
+      f = &s->flows[j];
+      if (f->v6 == of->v6 && f->port == of->port &&
+          !memcmp(f->addr, of->addr, of->v6 ? 16 : 4))
+        break;
+    }
+    if (j < s->nflows) {
+      s->flows[j].packets += of->packets;
+      s->flows[j].bytes += of->bytes;
+    } else if (s->nflows < IP_STATS_FLOWS) {
+      s->flows[s->nflows++] = *of;
+    } else {
+      s->flows_other += of->packets;
+    }
   }
 }
 

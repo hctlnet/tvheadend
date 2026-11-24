@@ -111,6 +111,8 @@ ip_stats_msg ( htsmsg_t *m, const ip_stats_t *s )
     htsmsg_add_str(e, "kind", ip_flow_kinds[f->kind]);
     if (f->rtp_pt >= 0)
       htsmsg_add_u32(e, "rtp_pt", f->rtp_pt);
+    if (f->ts_hdr > 0)
+      htsmsg_add_u32(e, "ts_header", f->ts_hdr);
     htsmsg_add_msg(l, NULL, e);
   }
   htsmsg_add_msg(m, "flows", l);
@@ -247,8 +249,110 @@ gse_stats_ip_bytes ( htsmsg_t *ip, const char *const *names )
   return sum;
 }
 
-void
-gse_stats_msg_text ( htsmsg_t *m, char *buf, size_t len )
+/* the multicast groups of a message ("flows"): how many carry what; returns
+ * their number */
+static int
+ip_stats_msg_groups ( htsmsg_t *m, int *kinds )
+{
+  htsmsg_t *l = htsmsg_get_list(m, "flows");
+  htsmsg_t *e;
+  htsmsg_field_t *f;
+  const char *s;
+  int groups = 0;
+  int i;
+
+  if (l == NULL)
+    return 0;
+  HTSMSG_FOREACH(f, l) {
+    e = htsmsg_field_get_map(f);
+    s = e ? htsmsg_get_str(e, "kind") : NULL;
+    if (s == NULL)
+      continue;
+    groups++;
+    for (i = 0; i < (int)ARRAY_SIZE(ip_flow_kinds); i++)
+      if (!strcmp(s, ip_flow_kinds[i]))
+        kinds[i]++;
+  }
+  return groups;
+}
+
+/* the multicast traffic (mc bytes): its rate, the groups and what they
+ * carry */
+static void
+ip_stats_msg_multicast ( htsmsg_t *m, int64_t mc, int64_t us, const char *sep,
+                         char *buf, size_t len, size_t *np )
+{
+  int kinds[ARRAY_SIZE(ip_flow_kinds)] = { 0 };
+  const int groups = ip_stats_msg_groups(m, kinds);
+  size_t n = *np;
+  const char *s = "";
+  char a[32];
+  int i;
+
+  gse_stats_amount(a, sizeof(a), mc, us);
+  tvh_strlcatf(buf, len, n, "%smulticast %s, %d group%s%s", sep, a, groups,
+               groups == 1 ? "" : "s",
+               htsmsg_get_s64_or_default(m, "flows_other", 0) ? " and more" : "");
+  if (groups) {
+    tvh_strlcatf(buf, len, n, " (");
+    for (i = 0; i < (int)ARRAY_SIZE(ip_flow_kinds); i++)
+      if (kinds[i]) {
+        tvh_strlcatf(buf, len, n, "%s%d %s", s, kinds[i], ip_flow_kinds[i]);
+        s = ", ";
+      }
+    tvh_strlcatf(buf, len, n, ")");
+  }
+  *np = n;
+}
+
+/* the unicast traffic (uc bytes): its rate, and by protocol - UDP, TCP, the
+ * others (the list is by bytes) */
+static void
+ip_stats_msg_unicast ( htsmsg_t *ip, int64_t uc, int64_t us, const char *sep,
+                       char *buf, size_t len, size_t *np )
+{
+  static const char *const udp[] = { "v4_unicast_udp", "v6_unicast_udp", NULL };
+  static const char *const tcp[] = { "v4_unicast_tcp", "v6_unicast_tcp", NULL };
+  htsmsg_t *l = htsmsg_get_list(ip, "unicast_protos");
+  htsmsg_t *e;
+  htsmsg_field_t *f;
+  size_t n = *np;
+  const char *s = " (";
+  const char *name;
+  char a[32];
+  char pbuf[24];
+  int proto;
+  int i = 0;
+
+  gse_stats_amount(a, sizeof(a), uc, us);
+  tvh_strlcatf(buf, len, n, "%sunicast %s", sep, a);
+  gse_stats_share(buf, len, &n, "UDP", gse_stats_ip_bytes(ip, udp), uc, &s);
+  gse_stats_share(buf, len, &n, "TCP", gse_stats_ip_bytes(ip, tcp), uc, &s);
+  if (l != NULL)
+    HTSMSG_FOREACH(f, l) {
+      e = htsmsg_field_get_map(f);
+      if (e == NULL || i++ >= 3)
+        continue;
+      proto = htsmsg_get_u32_or_default(e, "proto", 0);
+      name = gse_stats_ip_proto_name(proto);
+      if (name == NULL) {
+        snprintf(pbuf, sizeof(pbuf), "protocol %d", proto);
+        name = pbuf;
+      }
+      gse_stats_share(buf, len, &n, name, htsmsg_get_s64_or_default(e, "bytes", 0), uc, &s);
+    }
+  if (s[0] == ',')
+    tvh_strlcatf(buf, len, n, ")");
+  *np = n;
+}
+
+/* the IP traffic of a message ("ip", "flows") to the text, over us
+ * microseconds: the multicast groups and what they carry, broadcast, the
+ * unicast traffic by protocol. *sep: what parts the text has so far end
+ * with ("" none yet) */
+static void
+ip_stats_msg_text ( htsmsg_t *m, int64_t us, char *buf, size_t len, size_t *np,
+                    const char **sep )
 {
   static const char *const multicast[] = { "v4_multicast", "v6_multicast", NULL };
   static const char *const unicast[] = {
@@ -256,13 +360,50 @@ gse_stats_msg_text ( htsmsg_t *m, char *buf, size_t len )
     "v6_unicast_udp", "v6_unicast_tcp", "v6_unicast_other", NULL
   };
   static const char *const broadcast[] = { "v4_broadcast", NULL };
-  htsmsg_t *l, *e, *ip;
-  htsmsg_field_t *f;
-  int64_t us, frames = 0, pdus, bytes, all = 0, v4 = 0, mc, uc, bc;
-  int kinds[ARRAY_SIZE(ip_flow_kinds)] = { 0 }, groups = 0, i;
-  size_t n = 0;
+  htsmsg_t *ip = htsmsg_get_map(m, "ip");
+  int64_t mc;
+  int64_t uc;
+  int64_t bc;
+  size_t n = *np;
   char a[32];
+
+  if (ip == NULL)
+    return;
+  mc = gse_stats_ip_bytes(ip, multicast);
+  uc = gse_stats_ip_bytes(ip, unicast);
+  bc = gse_stats_ip_bytes(ip, broadcast);
+  if (mc) {
+    ip_stats_msg_multicast(m, mc, us, *sep, buf, len, &n);
+    *sep = "; ";
+  }
+  if (bc) {
+    gse_stats_amount(a, sizeof(a), bc, us);
+    tvh_strlcatf(buf, len, n, "%sbroadcast %s", *sep, a);
+    *sep = "; ";
+  }
+  if (uc) {
+    ip_stats_msg_unicast(ip, uc, us, *sep, buf, len, &n);
+    *sep = "; ";
+  }
+  *np = n;
+}
+
+void
+gse_stats_msg_text ( htsmsg_t *m, char *buf, size_t len )
+{
+  htsmsg_t *l;
+  htsmsg_t *e;
+  htsmsg_field_t *f;
+  int64_t us;
+  int64_t frames = 0;
+  int64_t pdus;
+  int64_t bytes;
+  int64_t all = 0;
+  int64_t v4 = 0;
+  int i;
+  size_t n = 0;
   const char *s;
+  const char *sep = "";
 
   buf[0] = '\0';
   us = htsmsg_get_s64_or_default(m, "us", 0);
@@ -294,64 +435,7 @@ gse_stats_msg_text ( htsmsg_t *m, char *buf, size_t len )
       }
   /* what the stream carries first (a cell of a list cuts the end): the IP
    * traffic, the other protocol types; then the PDUs and the share of IPv4 */
-  if ((ip = htsmsg_get_map(m, "ip")) != NULL) {
-    mc = gse_stats_ip_bytes(ip, multicast);
-    uc = gse_stats_ip_bytes(ip, unicast);
-    bc = gse_stats_ip_bytes(ip, broadcast);
-    if ((l = htsmsg_get_list(m, "flows")) != NULL)
-      HTSMSG_FOREACH(f, l)
-        if ((e = htsmsg_field_get_map(f)) != NULL && (s = htsmsg_get_str(e, "kind")) != NULL) {
-          groups++;
-          for (i = 0; i < (int)ARRAY_SIZE(ip_flow_kinds); i++)
-            if (!strcmp(s, ip_flow_kinds[i]))
-              kinds[i]++;
-        }
-    if (mc) {
-      gse_stats_amount(a, sizeof(a), mc, us);
-      tvh_strlcatf(buf, len, n, "multicast %s, %d group%s%s", a, groups,
-                   groups == 1 ? "" : "s",
-                   htsmsg_get_s64_or_default(m, "flows_other", 0) ? " and more" : "");
-      if (groups) {
-        tvh_strlcatf(buf, len, n, " (");
-        for (i = 0, s = ""; i < (int)ARRAY_SIZE(ip_flow_kinds); i++)
-          if (kinds[i]) {
-            tvh_strlcatf(buf, len, n, "%s%d %s", s, kinds[i], ip_flow_kinds[i]);
-            s = ", ";
-          }
-        tvh_strlcatf(buf, len, n, ")");
-      }
-    }
-    if (bc) {
-      gse_stats_amount(a, sizeof(a), bc, us);
-      tvh_strlcatf(buf, len, n, "%sbroadcast %s", n ? "; " : "", a);
-    }
-    if (uc) {
-      static const char *const udp[] = { "v4_unicast_udp", "v6_unicast_udp", NULL };
-      static const char *const tcp[] = { "v4_unicast_tcp", "v6_unicast_tcp", NULL };
-      gse_stats_amount(a, sizeof(a), uc, us);
-      tvh_strlcatf(buf, len, n, "%sunicast %s", n ? "; " : "", a);
-      /* by protocol: UDP, TCP, the others (the list is by bytes) */
-      s = " (";
-      gse_stats_share(buf, len, &n, "UDP", gse_stats_ip_bytes(ip, udp), uc, &s);
-      gse_stats_share(buf, len, &n, "TCP", gse_stats_ip_bytes(ip, tcp), uc, &s);
-      if ((l = htsmsg_get_list(ip, "unicast_protos")) != NULL) {
-        i = 0;
-        HTSMSG_FOREACH(f, l)
-          if ((e = htsmsg_field_get_map(f)) != NULL && i++ < 3) {
-            int proto = htsmsg_get_u32_or_default(e, "proto", 0);
-            const char *name = gse_stats_ip_proto_name(proto);
-            char pbuf[24];
-            if (name == NULL) {
-              snprintf(pbuf, sizeof(pbuf), "protocol %d", proto);
-              name = pbuf;
-            }
-            gse_stats_share(buf, len, &n, name, htsmsg_get_s64_or_default(e, "bytes", 0), uc, &s);
-          }
-      }
-      if (s[0] == ',')
-        tvh_strlcatf(buf, len, n, ")");
-    }
-  }
+  ip_stats_msg_text(m, us, buf, len, &n, &sep);
   /* the other protocol types (the list is by bytes) */
   if (all && v4 < all && (l = htsmsg_get_list(m, "protocols")) != NULL) {
     i = 0;
@@ -374,4 +458,53 @@ gse_stats_msg_text ( htsmsg_t *m, char *buf, size_t len )
   tvh_strlcatf(buf, len, n, "%sGSE: %" PRId64 " PDUs", n ? "; " : "", pdus);
   if (all)
     tvh_strlcatf(buf, len, n, ", %d %% IPv4", (int)(v4 * 100 / all));
+}
+
+/* what the MPE PIDs of a TS carried ("mpe": the PIDs; "ip", "flows": their
+ * IP traffic together) */
+void
+mpe_stats_msg_text ( htsmsg_t *m, char *buf, size_t len )
+{
+  htsmsg_t *l = htsmsg_get_list(m, "mpe");
+  htsmsg_t *e;
+  htsmsg_field_t *f;
+  const int64_t us = htsmsg_get_s64_or_default(m, "us", 0);
+  int64_t datagrams = 0;
+  int64_t scrambled = 0;
+  int pids = 0;
+  int pid = 0;
+  size_t n = 0;
+  size_t n0;
+  const char *sep = "";
+
+  buf[0] = '\0';
+  if (l != NULL)
+    HTSMSG_FOREACH(f, l) {
+      e = htsmsg_field_get_map(f);
+      if (e == NULL)
+        continue;
+      pids++;
+      pid = htsmsg_get_u32_or_default(e, "pid", 0);
+      datagrams += htsmsg_get_s64_or_default(e, "datagrams", 0);
+      scrambled += htsmsg_get_s64_or_default(e, "scrambled", 0);
+    }
+  if (pids == 1)
+    tvh_strlcatf(buf, len, n, "MPE (PID %d): ", pid);
+  else
+    tvh_strlcatf(buf, len, n, "MPE (%d PIDs): ", pids);
+  n0 = n;
+  ip_stats_msg_text(m, us, buf, len, &n, &sep);
+  if (n == n0 && datagrams)
+    tvh_strlcatf(buf, len, n, "%" PRId64 " datagrams, no IP", datagrams);
+  else if (n == n0)
+    tvh_strlcatf(buf, len, n, "scrambled");
+}
+
+void
+content_msg_text ( htsmsg_t *m, char *buf, size_t len )
+{
+  if (htsmsg_get_list(m, "mpe"))
+    mpe_stats_msg_text(m, buf, len);
+  else
+    gse_stats_msg_text(m, buf, len);
 }

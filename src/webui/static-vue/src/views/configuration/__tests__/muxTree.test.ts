@@ -23,6 +23,8 @@ import {
   scanResultName,
   MUX_TYPE_DAB_GSE,
   MUX_TYPE_GSE,
+  MUX_TYPE_IPTS_GSE,
+  MUX_TYPE_IPTS_MPE,
   MUX_TYPE_ISI,
   MUX_TYPE_T2MI,
   shortName,
@@ -117,8 +119,24 @@ describe('buildMuxTree', () => {
       { uuid: 'a', name: '11541.1V' },
       { uuid: 'g', name: '11520.8H', tstype: MUX_TYPE_GSE, stream_id: -1 },
       { uuid: 'b', name: '11517.546V', multistream: true },
+      { uuid: 'x', name: '11520.8H 239.1.2.5:1234', parent_mux: 'g', tstype: MUX_TYPE_IPTS_GSE, stream_id: -1 },
     ])
     expect(labels(tree)).toEqual(['11517.546V', '11520.8H', '11541.1V'])
+    expect(labels(tree[1].children)).toEqual(['239.1.2.5:1234'])
+  })
+
+  it('puts a TS in IP below what carries it: the GSE stream of its ISI, or the TS with its MPE PID', () => {
+    const tree = buildMuxTree([
+      { uuid: 't', name: '11239.673V', multistream: true },
+      { uuid: 'g', name: '11239.673V ISI 1', parent_mux: 't', tstype: MUX_TYPE_GSE, stream_id: 1 },
+      { uuid: 'x', name: '11239.673V ISI 1 239.1.2.4:1234', parent_mux: 't', tstype: MUX_TYPE_IPTS_GSE, stream_id: 1 },
+      { uuid: 'm', name: '12207H' },
+      { uuid: 'y', name: '12207H 239.1.2.3:5000', parent_mux: 'm', tstype: MUX_TYPE_IPTS_MPE, pid: 7021 },
+    ])
+    expect(labels(tree[0].children)).toEqual(['ISI 1'])
+    expect(labels(tree[0].children[0].children)).toEqual(['239.1.2.4:1234'])
+    expect(labels(tree[1].children)).toEqual(['239.1.2.3:5000'])
+    expect(muxTypeName(MUX_TYPE_IPTS_GSE)).toBe('TS in IP (GSE)')
   })
 
   it('keeps a sub-mux whose transponder is missing at the top, marked', () => {

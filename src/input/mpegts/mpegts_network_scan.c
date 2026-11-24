@@ -681,7 +681,9 @@ mpegts_network_scan_mux_done0
   /* a multistream transponder has no tables: its result are its input
    * streams; the services it got from the stream the demodulator chose go */
   if (!mpegts_mux_has_own_ts(mm) && result != MM_SCAN_NONE) {
-    const char *what = type0 == MM_TYPE_GSE ? "DAB ensemble" : "input stream";
+    /* of a GSE stream: its DAB ensembles and the muxes of a TS in IP */
+    const char *what = type0 == MM_TYPE_GSE ? "sub-mux" : "input stream";
+    const char *pl = type0 == MM_TYPE_GSE ? "es" : "s";
     /* a GSE stream that carried PDUs was read: what it carries is kept
      * with the mux (GSE content), DAB or not */
     result = dab_found > 0 || gse_content ? MM_SCAN_OK : MM_SCAN_FAIL;
@@ -690,12 +692,12 @@ mpegts_network_scan_mux_done0
       tvhinfo(LS_MPEGTS, "%s - scan complete, scanned again as a GSE mux", mm->mm_nicename);
     else if (dab_found > 0)
       tvhinfo(LS_MPEGTS, "%s - scan complete, %d %s%s", mm->mm_nicename,
-              dab_found, what, dab_found == 1 ? "" : "s");
+              dab_found, what, dab_found == 1 ? "" : pl);
     else if (gse_content)
-      tvhinfo(LS_MPEGTS, "%s - scan complete, GSE without DAB ensembles",
+      tvhinfo(LS_MPEGTS, "%s - scan complete, GSE without sub-muxes",
               mm->mm_nicename);
     else
-      tvhwarn(LS_MPEGTS, "%s - scan found no %ss", mm->mm_nicename, what);
+      tvhwarn(LS_MPEGTS, "%s - scan found no %s%s", mm->mm_nicename, what, pl);
 #if ENABLE_MPEGTS_DVB
     dvb_mux_transponder_drop_services((dvb_mux_t *)mm);
 #endif

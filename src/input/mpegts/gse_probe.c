@@ -25,8 +25,9 @@
  * (mm_secondary_cb), gse_stats takes the PDUs out of GSE and counts what
  * they are, the IPv4 ones go to the DAB probe as well (gse_dab_probe.c,
  * with libdvbdab). At the end what the stream carried stays with the mux
- * (dvb_mux_set_gse_content()); a stream of 188 byte user packets is no GSE
- * but a TS: the mux becomes a TS sub-mux.
+ * (dvb_mux_set_gse_content()), and each multicast group with a TS gets a mux
+ * of its own (dvb_mux_ipts_scan()); a stream of 188 byte user packets is no
+ * GSE but a TS: the mux becomes a TS sub-mux.
  * The GSE mux of a transponder whose single input stream is GSE is the mux
  * of the transponder itself (mpegts_mux_gse_transponder()): its tuner
  * delivers the BBFrames, all of them are its stream. When the transponder
@@ -221,8 +222,8 @@ gse_probe_content ( mpegts_mux_t *mm, htsmsg_t *m, int keep )
 }
 
 /* the scan of the GSE mux ended: what the stream carried (when evaluate,
- * not for a cancelled scan) stays with the mux; the DAB ensembles found,
- * *content: the stream carried GSE PDUs */
+ * not for a cancelled scan) stays with the mux; the DAB ensembles and the
+ * muxes of a TS in IP found, *content: the stream carried GSE PDUs */
 int
 mpegts_gse_probe_complete ( mpegts_mux_t *mm, int evaluate, int *content )
 {
@@ -230,6 +231,7 @@ mpegts_gse_probe_complete ( mpegts_mux_t *mm, int evaluate, int *content )
   gse_stats_result_t *r;
   htsmsg_t *m = NULL;
   int found;
+  int ipts = 0;
 
   *content = 0;
   if (p == NULL)
@@ -253,11 +255,13 @@ mpegts_gse_probe_complete ( mpegts_mux_t *mm, int evaluate, int *content )
     if (gse_probe_not_gse(mm, r))
       evaluate = 0;
     *content = evaluate && r->gse.pdus > 0;
+    if (evaluate)
+      ipts = dvb_mux_ipts_scan(mm, 0, &r->ip);
     free(r);
   }
   gse_probe_content(mm, m, evaluate);
 
-  found = gse_dab_probe_finish(p->dab, evaluate);
+  found = gse_dab_probe_finish(p->dab, evaluate) + ipts;
   gse_stats_destroy(p->gs);
   free(p);
   return found;

@@ -1560,10 +1560,13 @@ dvb_nit_callback
     onid  = extract_onid(lptr + 2);
 
 #if ENABLE_MPEGTS_DVB
-    /* Create new muxes (auto-discovery) */
-    r = dvb_nit_mux(mt, NULL, mm, onid, tsid, lptr, llen, tableid, bi, 1);
-    if (r < 0)
-      return r;
+    /* Create new muxes (auto-discovery) - not from the NIT of a TS that
+     * came in IP: it is of the network the TS is from, not of its carrier */
+    if (!mpegts_mux_is_ipts(mm)) {
+      r = dvb_nit_mux(mt, NULL, mm, onid, tsid, lptr, llen, tableid, bi, 1);
+      if (r < 0)
+        return r;
+    }
 #endif
 
     /* Find existing mux */
@@ -1579,7 +1582,7 @@ dvb_nit_callback
 #endif
     LIST_FOREACH(mux, &mn->mn_muxes, mm_network_link) {
       if (mux->mm_onid == onid && mux->mm_tsid == tsid &&
-          (mm == mux || mpegts_mux_alive(mux))) {
+          (mm == mux || (!mpegts_mux_is_ipts(mm) && mpegts_mux_alive(mux)))) {
         r = dvb_nit_mux(mt, mux, mm, onid, tsid, lptr, llen, tableid, bi, 0);
         if (r < 0)
           return r;

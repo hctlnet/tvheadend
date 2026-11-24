@@ -148,7 +148,8 @@ dvb_mux_class_dab_ip_opts(void *o, uint32_t opts)
   (void) opts;
   if (mm == NULL)
     return PO_HIDDEN;
-  if (mm->mm_type == MM_TYPE_DAB_MPE || mm->mm_type == MM_TYPE_DAB_GSE)
+  if (mm->mm_type == MM_TYPE_DAB_MPE || mm->mm_type == MM_TYPE_DAB_GSE ||
+      mpegts_mux_is_ipts(mm))
     return 0;
   return PO_NOUI | PO_NOSAVE;
 }
@@ -218,7 +219,8 @@ dvb_mux_class_dab_port_set(void *o, const void *v)
 /*
  * DAB IP address get/set helpers (string <-> uint32)
  */
-/* what the GSE stream carried at its last scan, one line */
+/* what the mux carried at its last scan (a GSE stream, the MPE PIDs of a
+ * TS), one line */
 static const void *
 dvb_mux_class_gse_content_get(void *o)
 {
@@ -229,7 +231,7 @@ dvb_mux_class_gse_content_get(void *o)
   s = buf;
   buf[0] = '\0';
   if (lm->lm_gse_content)
-    gse_stats_msg_text(lm->lm_gse_content, buf, sizeof(buf));
+    content_msg_text(lm->lm_gse_content, buf, sizeof(buf));
   return &s;
 }
 
@@ -295,6 +297,8 @@ dvb_mux_class_type_list ( void *o, const char *lang )
     { N_("TS"),                       MM_TYPE_TS },
     { N_("TS (input stream)"),        MM_TYPE_ISI },
     { N_("T2MI"),                     MM_TYPE_T2MI },
+    { N_("TS in IP (MPE)"),           MM_TYPE_IPTS_MPE },
+    { N_("TS in IP (GSE)"),           MM_TYPE_IPTS_GSE },
 #if ENABLE_DVBDAB
     { N_("DAB-MPE"),                  MM_TYPE_DAB_MPE },
     { N_("DAB-ETI"),                  MM_TYPE_DAB_ETI },
@@ -481,11 +485,12 @@ const idclass_t dvb_mux_class =
     {
       .type     = PT_STR,
       .id       = "gse_content",
-      .name     = N_("GSE content"),
-      .desc     = N_("What the GSE stream carried at its last scan: its PDUs, "
-                     "the share of IPv4, the multicast groups (MPEG-TS, RTP, "
-                     "MPEG-TS in RTP, DAB EDI, other UDP), broadcast and "
-                     "unicast traffic."),
+      .name     = N_("Content"),
+      .desc     = N_("What the mux carried at its last scan besides its "
+                     "services: a GSE stream its PDUs and the share of IPv4, "
+                     "the MPE PIDs of a TS their datagrams; of the IP traffic "
+                     "the multicast groups (MPEG-TS, RTP, MPEG-TS in RTP, "
+                     "DAB EDI, other UDP), broadcast and unicast traffic."),
       .get      = dvb_mux_class_gse_content_get,
       .opts     = PO_RDONLY | PO_NOSAVE,
       .get_opts = dvb_mux_class_gse_content_opts,
@@ -512,8 +517,8 @@ const idclass_t dvb_mux_class =
     {
       .type     = PT_STR,
       .id       = "dab_ip",
-      .name     = N_("DAB IP"),
-      .desc     = N_("Multicast IP address for DAB-MPE/GSE."),
+      .name     = N_("IP address"),
+      .desc     = N_("The multicast group of a DAB ensemble or a TS in MPE or GSE."),
       .get      = dvb_mux_class_dab_ip_get,
       .set      = dvb_mux_class_dab_ip_set,
       .get_opts = dvb_mux_class_dab_ip_opts,
@@ -521,8 +526,8 @@ const idclass_t dvb_mux_class =
     {
       .type     = PT_U32,
       .id       = "dab_port",
-      .name     = N_("DAB Port"),
-      .desc     = N_("UDP port for DAB-MPE/GSE."),
+      .name     = N_("UDP port"),
+      .desc     = N_("The UDP port of a DAB ensemble or a TS in MPE or GSE."),
       .get      = dvb_mux_class_dab_port_get,
       .set      = dvb_mux_class_dab_port_set,
       .get_opts = dvb_mux_class_dab_ip_opts,
@@ -2167,19 +2172,20 @@ dvb_mux_config_save ( mpegts_mux_t *mm, char *filename, size_t fsize )
 /*
  * The name of a sub-mux is the name of what carries it, then one part for
  * it: "ISI <n>" for an input stream (TS or GSE), "T2MI <PID>[ PLP <n>]"
- * for a T2-MI stream, the ensemble for DAB. The type is not in the name (it
- * has a field of its own).
+ * for a T2-MI stream, the ensemble for DAB, the group and port for a TS in
+ * IP. The type is not in the name (it has a field of its own).
  */
 
-/* where a DAB ensemble is in what carries it: the PID (ETI-NA, TS NI), the
- * IP address and port (MPE, GSE) */
+/* where a DAB ensemble or a TS in IP is in what carries it: the PID (ETI-NA,
+ * TS NI), the IP address and port (MPE, GSE) */
 static void
 dvb_mux_dab_address ( mpegts_mux_t *mm, char *buf, size_t len )
 {
   const dvb_mux_conf_t *dmc = &((dvb_mux_t *)mm)->lm_tuning;
   uint32_t ip = dmc->dmc_dab_ip;
 
-  if (mm->mm_type == MM_TYPE_DAB_MPE || mm->mm_type == MM_TYPE_DAB_GSE)
+  if (mm->mm_type == MM_TYPE_DAB_MPE || mm->mm_type == MM_TYPE_DAB_GSE ||
+      mpegts_mux_is_ipts(mm))
     snprintf(buf, len, "%u.%u.%u.%u:%u",
              (ip >> 24) & 0xFF, (ip >> 16) & 0xFF, (ip >> 8) & 0xFF, ip & 0xFF,
              dmc->dmc_dab_port);
@@ -2187,14 +2193,15 @@ dvb_mux_dab_address ( mpegts_mux_t *mm, char *buf, size_t len )
     snprintf(buf, len, "PID %u", dmc->dmc_fe_pid);
 }
 
-/* DAB in GSE is in an input stream: its ISI, when the transponder has
- * several (-1 else) */
+/* DAB or a TS in IP in GSE is in an input stream: its ISI, when the
+ * transponder has several (-1 else) */
 static int
 dvb_mux_dab_isi ( mpegts_mux_t *mm )
 {
   dvb_mux_t *lm = (dvb_mux_t *)mm, *t;
 
-  if (mm->mm_type != MM_TYPE_DAB_GSE || lm->lm_tuning.dmc_fe_stream_id < 0)
+  if ((mm->mm_type != MM_TYPE_DAB_GSE && mm->mm_type != MM_TYPE_IPTS_GSE) ||
+      lm->lm_tuning.dmc_fe_stream_id < 0)
     return -1;
   t = dvb_mux_submux_parent(lm);
   return t && t->lm_multistream ? lm->lm_tuning.dmc_fe_stream_id : -1;
@@ -2257,6 +2264,13 @@ dvb_mux_submux_name ( mpegts_mux_t *mm, char *buf, size_t len )
       snprintf(buf, len, "%s %s (%s)", isi, lm->lm_dab_ensemble, addr);
     else
       snprintf(buf, len, "%s %s", isi, lm->lm_dab_ensemble);
+  } else if (mpegts_mux_is_ipts(mm)) {
+    isi[0] = '\0';
+    n = dvb_mux_dab_isi(mm);
+    if (n >= 0)
+      snprintf(isi, sizeof(isi), " ISI %d", n);
+    dvb_mux_dab_address(mm, addr, sizeof(addr));
+    snprintf(buf, len, "%s %s", isi, addr);
   }
 }
 
@@ -2358,6 +2372,158 @@ dvb_mux_set_gse_content ( dvb_mux_t *lm, htsmsg_t *m )
   htsmsg_destroy(lm->lm_gse_content);
   lm->lm_gse_content = m;
   idnode_changed(&lm->mm_id);
+}
+
+/* a scan for a known mux of a TS in IP whose last scan did not succeed, or
+ * whose group was not seen: its result may be from an earlier tuning */
+static void
+dvb_mux_ipts_requeue ( mpegts_mux_t *mm )
+{
+  if (mm->mm_scan_state != MM_SCAN_STATE_IDLE || !mm->mm_is_enabled(mm))
+    return;
+  mpegts_network_scan_queue_add(mm, SUBSCRIPTION_PRIO_SCAN_INIT,
+                                SUBSCRIPTION_INITSCAN, 10);
+}
+
+static int
+dvb_mux_ipts_flow ( const ip_flow_t *f, uint32_t *addr )
+{
+  if (f->v6 || (f->kind != IP_FLOW_TS && f->kind != IP_FLOW_RTP_TS))
+    return 0;
+  *addr = ((uint32_t)f->addr[0] << 24) | ((uint32_t)f->addr[1] << 16) |
+          ((uint32_t)f->addr[2] << 8) | f->addr[3];
+  return 1;
+}
+
+/* the mux of a group that was seen again; scanned when its last scan did
+ * not succeed */
+static void
+dvb_mux_ipts_seen ( dvb_mux_t *lm, mpegts_mux_t *carrier )
+{
+  if (lm->mm_type == MM_TYPE_IPTS_MPE)
+    dvb_mux_submux_found(lm, carrier);
+  lm->mm_scan_last_seen = gclk();
+  idnode_changed(&lm->mm_id);
+  if (lm->mm_scan_result != MM_SCAN_OK && lm->mm_scan_result != MM_SCAN_PARTIAL &&
+      lm->mm_scan_result != MM_SCAN_IGNORE)
+    dvb_mux_ipts_requeue((mpegts_mux_t *)lm);
+}
+
+/* a new mux for the group (dmc: where it is in the carrier), queued for its
+ * first scan */
+static dvb_mux_t *
+dvb_mux_ipts_create ( mpegts_mux_t *carrier, const dvb_mux_conf_t *dmc, int type )
+{
+  dvb_mux_t *cm = (dvb_mux_t *)carrier;
+  dvb_mux_t *lm = dvb_mux_create0((dvb_network_t *)carrier->mm_network, MPEGTS_ONID_NONE,
+                                  MPEGTS_TSID_NONE, dmc, NULL, NULL);
+  dvb_mux_t *t;
+
+  if (lm == NULL)
+    return NULL;
+  lm->mm_type = type;
+  /* in the PID of the TS mux; in GSE: a sub-mux of the transponder, in
+   * the input stream of the GSE mux (the GSE mux of a single stream is
+   * the transponder) */
+  t = type == MM_TYPE_IPTS_MPE || mpegts_mux_gse_transponder(carrier)
+        ? cm : dvb_mux_submux_parent(cm);
+  if (t)
+    dvb_mux_submux_link(lm, t);
+  mpegts_mux_update_nice_name((mpegts_mux_t *)lm);
+  tvhinfo(LS_MPEGTS, "mux %s: created the mux of the TS in IP %s",
+          carrier->mm_nicename, lm->mm_nicename);
+  lm->mm_scan_first = gclk();
+  lm->mm_scan_last_seen = lm->mm_scan_first;
+  idnode_changed(&lm->mm_id);
+  mpegts_network_scan_queue_add((mpegts_mux_t *)lm, SUBSCRIPTION_PRIO_SCAN_INIT,
+                                SUBSCRIPTION_INITSCAN, 10);
+  return lm;
+}
+
+/* a group and port is among those that bring a TS */
+static int
+dvb_mux_ipts_has_flow ( const ip_stats_t *ip, uint32_t addr, uint16_t port )
+{
+  uint32_t a;
+  int i;
+
+  for (i = 0; i < ip->nflows; i++)
+    if (dvb_mux_ipts_flow(&ip->flows[i], &a) && a == addr && ip->flows[i].port == port)
+      return 1;
+  return 0;
+}
+
+/* the muxes of this type at the place of dmc in the carrier whose group was
+ * not seen: scanned */
+static void
+dvb_mux_ipts_unseen ( mpegts_mux_t *carrier, const dvb_mux_conf_t *dmc, int type,
+                      const ip_stats_t *ip )
+{
+  const dvb_mux_conf_t *c;
+  mpegts_mux_t *mm;
+
+  LIST_FOREACH(mm, &carrier->mm_network->mn_muxes, mm_network_link) {
+    if (mm->mm_type != type)
+      continue;
+    c = &((dvb_mux_t *)mm)->lm_tuning;
+    if (c->dmc_fe_type != dmc->dmc_fe_type ||
+        deltaU32(c->dmc_fe_freq, dmc->dmc_fe_freq) > 2000 ||
+        c->u.dmc_fe_qpsk.polarisation != dmc->u.dmc_fe_qpsk.polarisation ||
+        c->dmc_fe_stream_id != dmc->dmc_fe_stream_id ||
+        c->dmc_fe_pid != dmc->dmc_fe_pid)
+      continue;
+    if (dvb_mux_ipts_has_flow(ip, c->dmc_dab_ip, c->dmc_dab_port))
+      continue;
+    tvhdebug(LS_MPEGTS, "mux %s: the group of %s was not seen, scanning it",
+             carrier->mm_nicename, mm->mm_nicename);
+    dvb_mux_ipts_requeue(mm);
+  }
+}
+
+/*
+ * The IPv4 multicast groups of a carrier that carry a TS (ip: what its scan
+ * counted; a GSE mux: in its stream, a TS mux: in its MPE PID pid): each
+ * one has a mux in the carrier, made here when there is none, and its
+ * services come from the scan of that mux. A known one whose group was not
+ * seen is scanned: one that is gone ends as failed, not with an old OK.
+ * Returns the muxes of the groups seen.
+ */
+int
+dvb_mux_ipts_scan ( mpegts_mux_t *carrier, uint16_t pid, const ip_stats_t *ip )
+{
+  const int type = carrier->mm_type == MM_TYPE_GSE ? MM_TYPE_IPTS_GSE : MM_TYPE_IPTS_MPE;
+  dvb_network_t *ln = (dvb_network_t *)carrier->mm_network;
+  dvb_mux_t *lm;
+  dvb_mux_conf_t dmc;
+  uint32_t addr;
+  int found = 0;
+  int i;
+
+  dmc = ((dvb_mux_t *)carrier)->lm_tuning;
+  dmc.dmc_dab_eti_padding = 0;
+  dmc.dmc_dab_eti_bit_offset = 0;
+  dmc.dmc_dab_eti_inverted = 0;
+  if (type == MM_TYPE_IPTS_MPE)
+    dmc.dmc_fe_pid = pid;
+
+  for (i = 0; i < ip->nflows; i++) {
+    if (!dvb_mux_ipts_flow(&ip->flows[i], &addr))
+      continue;
+    dmc.dmc_dab_ip = addr;
+    dmc.dmc_dab_port = ip->flows[i].port;
+    lm = dvb_network_find_submux(ln, &dmc, type);
+    if (lm)
+      dvb_mux_ipts_seen(lm, carrier);
+    else
+      lm = dvb_mux_ipts_create(carrier, &dmc, type);
+    if (lm)
+      found++;
+  }
+
+  /* more groups than counted: which ones were not seen is not known */
+  if (!ip->flows_other)
+    dvb_mux_ipts_unseen(carrier, &dmc, type, ip);
+  return found;
 }
 
 static void
@@ -2598,7 +2764,7 @@ dvb_mux_has_streams ( dvb_network_t *ln, dvb_mux_t *lm )
         !dvb_mux_same_frequency(&lm2->lm_tuning, &lm->lm_tuning))
       continue;
     if (mm->mm_type == MM_TYPE_GSE || mm->mm_type == MM_TYPE_DAB_GSE ||
-        mm->mm_type == MM_TYPE_ISI)
+        mm->mm_type == MM_TYPE_IPTS_GSE || mm->mm_type == MM_TYPE_ISI)
       return 1;
     if (mm->mm_type != MM_TYPE_TS)
       continue;
