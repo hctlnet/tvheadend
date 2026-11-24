@@ -50,7 +50,8 @@ typedef struct isi_probe_ctx {
   int                   tap;
   uint8_t               seen[32];
   uint8_t               matype[256];
-  int                   upl[256];       /* bits; -1 not seen (GSE-HEM has none) */
+  int                   upl[256];       /* bits; -1 not seen (a header in high
+                                           efficiency mode has none) */
   /* MATYPE-2 from frame to frame: the frames after the first, those whose
    * MATYPE-2 is 1..127 above the one before (mod 256), the last one (-1 none
    * yet) */
@@ -102,8 +103,9 @@ isi_probe_packet_cb(void *aux, const uint8_t *pkt, int len)
       isi_probe_follow(ctx, isi);
       ctx->seen[isi >> 3] |= 1 << (isi & 7);
       ctx->matype[isi] = matype;
-      /* the BBHEADER from byte 9 on: UPL in its bytes 2 and 3 */
-      if ((matype >> 6) != 2)
+      /* the BBHEADER from byte 9 on: UPL in its bytes 2 and 3 - of a header
+       * in normal mode, in high efficiency mode they carry the ISSY */
+      if ((matype >> 6) != 2 && bbframe_header_mode(pkt + 9) == 0)
         ctx->upl[isi] = (pkt[11] << 8) | pkt[12];
     }
 }
@@ -259,17 +261,22 @@ isi_read_driver_list(int fe_fd, uint8_t *isi_list, uint8_t *matype_list)
  * 307-1 and -2): 11 TS, 10 GSE-HEM (DVB-S2X), 00 generic packetized, 01
  * generic continuous. A generic one of 188 byte user packets is a TS one
  * (16E 12677.964V says generic continuous, UPL 1504, and carries PAT, PMT,
- * SDT; bbframe_is_ts()) - when the frame headers told the UPL (upl bits,
+ * SDT; bbframe_frame_ts()) - when the frame headers told the UPL (upl bits,
  * else -1); else GSE. A MATYPE of 0 is an ISI the driver gave no MATYPE for
  * (a real one always has other bits set): not known, so a TS.
+ * A TS has user packets: one whose own frames tell a continuous stream (UPL
+ * 0) is none, whatever MATYPE there is for it. The length itself is not 188
+ * bytes for every TS: 1512 or 1520 bits with 0xDA, 0xD8, 0xC6 (9.5E, 5W).
  */
 static int
 isi_is_gse_matype(uint8_t matype, int upl)
 {
   int ts_gs = (matype >> 6) & 0x3;
 
-  if (matype == 0 || ts_gs == 3)
+  if (matype == 0)
     return 0;
+  if (ts_gs == 3)
+    return upl == 0;
   if (ts_gs == 2)
     return 1;
   return upl != 188 * 8;
@@ -401,8 +408,8 @@ isi_probe_create_muxes(mpegts_mux_t *mm, const uint8_t *isi_list, int isi_count,
     uint8_t matype = matype_list[isi];
     int is_gse = isi_is_gse_matype(matype, upl_list[isi]);
 
-    tvhdebug(LS_MPEGTS, "ISI probe: ISI %d, MATYPE=0x%02X, %s",
-             isi, matype, is_gse ? "GSE" : "TS");
+    tvhdebug(LS_MPEGTS, "ISI probe: ISI %d, MATYPE=0x%02X, UPL %d, %s",
+             isi, matype, upl_list[isi], is_gse ? "GSE" : "TS");
 
     /* an existing mux of the stream (from before, or the scanned one); one
      * of the other type, without sub-muxes, was taken for the wrong one
@@ -626,7 +633,10 @@ mpegts_isi_probe_complete(mpegts_mux_t *mm, int evaluate, int no_tables)
     isi_probe_counter(mm, ctx);
     isi_count = 0;
   }
-  /* the streams of the frame headers the driver did not list */
+  /* the streams of the frame headers the driver did not list; the MATYPE
+   * of a stream is that of its own frames, when they were read - what the
+   * driver lists for it is not always theirs (33E 11622.96V: 0xF0 for ISI
+   * 1 now and then, the frames say 0x42) */
   else if (evaluate && ctx->tap) {
     int i, j;
     for (i = 0; i < 256; i++) {
@@ -636,8 +646,7 @@ mpegts_isi_probe_complete(mpegts_mux_t *mm, int evaluate, int no_tables)
         ;
       if (j == isi_count)
         isi_list[isi_count++] = i;
-      if (matype_list[i] == 0)
-        matype_list[i] = ctx->matype[i];
+      matype_list[i] = ctx->matype[i];
     }
   }
 
