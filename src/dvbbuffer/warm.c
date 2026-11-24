@@ -10,6 +10,9 @@
  *  kept warm as well, up to lru_max, with a lower weight (lru_weight). A
  *  used mux gets its warm subscription and ring buffer while it is being
  *  watched, so it stays tuned with a full backlog when the viewer leaves.
+ *  A scan a user asked for (or the first one of a mux) uses its
+ *  transponder the same way: it stays tuned for the scans of its sub-muxes
+ *  and for whoever looks at what was found.
  *
  *  A warm subscription never moves a dish (SUBSCRIPTION_NOMOVE): a mux
  *  behind a rotor is kept warm only while the dish stands at its position.
@@ -592,6 +595,8 @@ dvbbuffer_warm_reconcile_cb(void *aux)
   uint32_t count;
   int64_t next;
   int check;
+  int scanning;
+  int later = 0;
 
   lock_assert(&global_lock);
 
@@ -603,16 +608,24 @@ dvbbuffer_warm_reconcile_cb(void *aux)
       dvbbuffer_warm_destroy(dw);
   }
   dvbbuffer_warm_add_prebuffer(count);
+  /* a recently used mux that is not tuned (the one before, when the mux a
+   * scan made the last used one is no good): tuners go to the scan while
+   * one is queued or running, it gets its place back after that */
+  scanning = dvbbuffer_warm_scanning();
   LIST_FOREACH(du, &dvbbuffer_used_all, du_link)
-    if (du->du_sel && dvbbuffer_warm_find(du->du_mux) == NULL)
-      dvbbuffer_warm_create(du->du_mux, 1);
+    if (du->du_sel && dvbbuffer_warm_find(du->du_mux) == NULL) {
+      if (scanning && du->du_mux->mm_active == NULL)
+        later = 1;
+      else
+        dvbbuffer_warm_create(du->du_mux, 1);
+    }
   dvbbuffer_used_forget();
 
   /* busy entries keep their place; next try when the wait is over, the
    * others are checked now and then */
   check = dvbbuffer_warm_check(mclk());
   next = dvbbuffer_warm_busy_update();
-  if (check && (next == 0 || next > mclk() + sec2mono(DVBBUFFER_WARM_CHECK)))
+  if ((check || later) && (next == 0 || next > mclk() + sec2mono(DVBBUFFER_WARM_CHECK)))
     next = mclk() + sec2mono(DVBBUFFER_WARM_CHECK);
   if (next)
     mtimer_arm_abs(&dvbbuffer_warm_timer, dvbbuffer_warm_reconcile_cb, NULL, next);
@@ -625,7 +638,8 @@ dvbbuffer_warm_reconcile(void)
 }
 
 /*
- * A viewer starts (+1) or stops (-1) using a mux (global_lock)
+ * A viewer starts (+1) or stops (-1) using a mux, a scan of it starts (0:
+ * used now, nobody to count) (global_lock)
  */
 void
 dvbbuffer_warm_used(mpegts_mux_t *mm, int delta)
@@ -654,11 +668,11 @@ dvbbuffer_warm_used(mpegts_mux_t *mm, int delta)
   if (du->du_users < 0)
     du->du_users = 0;
   du->du_last = mclk();
-  if (delta > 0)
+  if (delta >= 0)
     du->du_dead = 0;    /* used again: another try */
   /* ... and one that waits (no tuner, dish elsewhere) looks again now: the
    * mux is being tuned for the viewer */
-  dw = delta > 0 ? dvbbuffer_warm_find(mm) : NULL;
+  dw = delta >= 0 ? dvbbuffer_warm_find(mm) : NULL;
   if (dw && dw->dw_busy && dw->dw_sub == NULL) {
     dw->dw_retry = mclk();
     dw->dw_backoff = 0;
@@ -703,6 +717,24 @@ dvbbuffer_service_used(mpegts_service_t *s, int delta)
     mm = (mpegts_mux_t *)p;
   uuid_duplicate(&s->s_dvbbuffer_used_mux, &mm->mm_id.in_uuid);
   dvbbuffer_warm_used(mm, delta);
+}
+
+/*
+ * The scan of a mux starts (global_lock): its transponder is a recently
+ * used mux from now on. Not for an idle scan - it goes round all muxes and
+ * would take the place of the mux last watched again and again
+ */
+void
+dvbbuffer_mux_scanned(mpegts_mux_t *mm, int flags)
+{
+  dvb_mux_t *p;
+
+  lock_assert(&global_lock);
+  if (!dvbbuffer_running || !(flags & (SUBSCRIPTION_USERSCAN | SUBSCRIPTION_INITSCAN)))
+    return;
+  while (mpegts_mux_is_submux(mm) && (p = dvb_mux_submux_parent((dvb_mux_t *)mm)) != NULL)
+    mm = (mpegts_mux_t *)p;
+  dvbbuffer_warm_used(mm, 0);
 }
 
 /*
