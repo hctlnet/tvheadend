@@ -43,6 +43,7 @@ extern struct th_subscription_list subscriptions;
 #define SUBSCRIPTION_EPG        0x8000 ///< for mux subscriptions
 #define SUBSCRIPTION_HTSP      0x10000
 #define SUBSCRIPTION_SWSERVICE 0x20000
+#define SUBSCRIPTION_NOMOVE    0x40000 ///< never moves a dish (a mux kept warm)
 
 /* Some internal priorities */
 #define SUBSCRIPTION_PRIO_KEEP        1 ///< Keep input rolling

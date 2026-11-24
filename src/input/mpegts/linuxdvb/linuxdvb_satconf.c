@@ -992,9 +992,27 @@ linuxdvb_satconf_power_save
   return 0;
 }
 
+/*
+ * Tuning the mux would move the dish: its rotor went somewhere else last,
+ * or it was not moved from here yet (where it stands is not known then)
+ */
+int
+linuxdvb_satconf_dish_elsewhere
+  ( linuxdvb_satconf_t *ls, mpegts_mux_t *mm )
+{
+  linuxdvb_satconf_ele_t *lse = linuxdvb_satconf_find_ele(ls, mm);
+
+  return lse && lse->lse_rotor && !linuxdvb_rotor_positioned(lse->lse_rotor, ls);
+}
+
+/*
+ * nomove: for a start that does not move the dish (SUBSCRIPTION_NOMOVE) -
+ * no rotor time, and the external rotor command is not asked for it (the
+ * command moves the dish when it does not stand there)
+ */
 int
 linuxdvb_satconf_get_grace
-  ( linuxdvb_satconf_t *ls, mpegts_mux_t *mm )
+  ( linuxdvb_satconf_t *ls, mpegts_mux_t *mm, int nomove )
 {
   linuxdvb_satconf_ele_t *lse = linuxdvb_satconf_find_ele(ls, mm);
   if (lse == NULL)
@@ -1010,6 +1028,8 @@ linuxdvb_satconf_get_grace
 
   /* Add diseqc delay */
   for (i = 0; i < 3; i++) {
+    if (nomove && lds[i] == (linuxdvb_diseqc_t*)lse->lse_rotor)
+      continue;
     if (lds[i] && lds[i]->ld_grace)
       r += lds[i]->ld_grace(lds[i], (dvb_mux_t*)mm);
   }
