@@ -100,6 +100,14 @@ typedef struct dvb_mux
   int lm_multistream;
 
   /*
+   * The single input stream of the transponder is a generic one of 188 byte
+   * user packets: a TS, but no tuner delivers it as one. A TS mux like any
+   * other; a tuner that delivers BBFrames is tuned for them and unpacks the
+   * TS (linuxdvb_frontend_input_thread)
+   */
+  int lm_generic_ts;
+
+  /*
    * What the mux carried at its last scan besides its services: a GSE
    * stream (MM_TYPE_GSE) the message of gse_stats_msg(), a TS with MPE
    * PIDs the one of the DAB probe ("mpe", see mpe_stats_msg_text()), with

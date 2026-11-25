@@ -75,6 +75,7 @@ bbframe_frame_ts ( bbframe_ts_t *bt, const uint8_t *frame, size_t len,
   if ((h[0] >> 6) != 3 &&
       ((h[0] >> 6) > 1 || mode != 0 || ((h[2] << 8) | h[3]) != 188 * 8))
     return 0;
+  bt->bt_ts_frames++;
   syncd = ((size_t)h[7] << 8) | h[8];
   if (mode == 1)
     upl = 187 + ((h[0] & 0x04) ? 1 : 0);

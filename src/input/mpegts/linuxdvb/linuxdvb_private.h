@@ -175,6 +175,9 @@ struct linuxdvb_frontend
   int                       lfe_supports_bbframes;  /* outputs the BBFrames of all input streams */
   int64_t                   lfe_card_id;            /* card_mac_address: the same for the demods of a card */
   int                       lfe_bbframes;           /* tuned so: the PID filters read them */
+  int                       lfe_bbframes_ts;        /* ... and the TS of the mux is unpacked from them (lm_generic_ts) */
+  uint64_t                  lfe_bbts_frames;        /* the frames of this tune, and those with TS packets */
+  uint64_t                  lfe_bbts_ts;
   int64_t                   lfe_stream_info;        /* mclk() of the next MATYPE/MODCOD read */
   int                       lfe_matype;             /* the MATYPE read at this tune, -1: none (yet, or tuned for BBFrames) */
 

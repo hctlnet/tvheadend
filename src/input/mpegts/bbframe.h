@@ -49,6 +49,8 @@ typedef struct bbframe_ts {
   int      bt_mode;      /* the mode and UPL of the frame it began in */
   size_t   bt_upl;
   uint64_t bt_frames;    /* frames of the stream */
+  uint64_t bt_ts_frames; /* ... those with TS packets (a TS stream, or a
+                            generic one of 188 byte user packets) */
   uint64_t bt_errors;    /* frames lost (header, length) */
   uint64_t bt_resyncs;   /* user packets lost */
 } bbframe_ts_t;

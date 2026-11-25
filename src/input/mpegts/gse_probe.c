@@ -108,12 +108,20 @@ gse_probe_to_ts_cb ( void *aux, int disarmed )
     tvh_mutex_lock(&global_lock);
     mm = mpegts_mux_find(uuid);
     if (mm && mpegts_mux_gse_transponder(mm)) {
-      tvhinfo(LS_MPEGTS, "%s - a TS or several input streams, not a single GSE "
-              "stream: a TS mux again", mm->mm_nicename);
+      if (((dvb_mux_t *)mm)->lm_generic_ts)
+        tvhinfo(LS_MPEGTS, "%s - a generic stream of 188 byte user packets, not "
+                "GSE: a TS mux, its TS comes out of the BBFrames", mm->mm_nicename);
+      else
+        tvhinfo(LS_MPEGTS, "%s - a TS or several input streams, not a single GSE "
+                "stream: a TS mux again", mm->mm_nicename);
       mm->mm_type = MM_TYPE_TS;
       mm->mm_scan_result = MM_SCAN_NONE;
       dvb_mux_set_gse_content((dvb_mux_t *)mm, NULL);
       mpegts_mux_update_nice_name(mm);
+      /* tuned as the GSE mux it was (something keeps it: a warm mux): the
+       * tuner delivers it another way now, so it starts anew */
+      if (mm->mm_active)
+        mm->mm_stop(mm, 1, SM_CODE_SOURCE_RECONFIGURED);
       mpegts_network_scan_queue_add(mm, SUBSCRIPTION_PRIO_SCAN_INIT,
                                     SUBSCRIPTION_INITSCAN, 10);
     } else if (mm && mm->mm_type == MM_TYPE_GSE) {
@@ -181,20 +189,29 @@ gse_probe_not_gse ( mpegts_mux_t *mm, const gse_stats_result_t *r )
 {
   const uint64_t frames = r->frames[0] + r->frames[1] + r->frames[2] + r->frames[3];
   char ubuf[UUID_HEX_SIZE];
+  int generic_ts;
   int ts;
 
   if (frames == 0)
     return 0;
   /* not GSE: a generic stream of 188 byte user packets is a TS one (16E
-   * 12677.964V: generic continuous, UPL 1504, PAT, PMT, SDT). The mux of
-   * a transponder stays GSE with such a stream (as it is tuned it had no
-   * tables, that made it one); it is a TS mux again when most frames are
-   * TS ones, or frames are of input streams (a multistream transponder
-   * now: the ISI probe of its scan as a TS mux finds them) */
-  if (mpegts_mux_gse_transponder(mm))
-    ts = r->frames[3] * 2 > frames || gse_probe_has_isis(r);
-  else
-    ts = r->frames_upl * 2 > frames && r->upl == 188 * 8;
+   * 12677.964V: generic continuous, UPL 1504, PAT, PMT, SDT; 1W 11049V:
+   * generic packetized, the single stream of its transponder). The mux of
+   * a transponder is a TS mux again when most frames are TS ones, or
+   * frames are of input streams (a multistream transponder now: the ISI
+   * probe of its scan as a TS mux finds them) - and with such a generic
+   * stream, which no tuner delivers as a TS (as it is tuned it had no
+   * tables, that made it a GSE mux): its TS is unpacked from the BBFrames
+   * from now on (lm_generic_ts) */
+  generic_ts = r->frames_upl * 2 > frames && r->upl == 188 * 8;
+  if (mpegts_mux_gse_transponder(mm)) {
+    ts = r->frames[3] * 2 > frames || gse_probe_has_isis(r) || generic_ts;
+    if (ts)
+      ((dvb_mux_t *)mm)->lm_generic_ts = generic_ts && !gse_probe_has_isis(r) &&
+                                         r->frames[3] * 2 <= frames;
+  } else {
+    ts = generic_ts;
+  }
   if (!ts)
     return 0;
   tasklet_arm_alloc(gse_probe_to_ts_cb, strdup(idnode_uuid_as_str(&mm->mm_id, ubuf)));

@@ -448,6 +448,16 @@ const idclass_t dvb_mux_class =
       .opts     = PO_RDONLY | PO_ADVANCED,
     },
     {
+      .type     = PT_BOOL,
+      .id       = "generic_ts",
+      .name     = N_("TS in a generic stream"),
+      .desc     = N_("The single input stream of the DVB-S2 transponder is a "
+                     "generic stream of 188 byte packets: the transport "
+                     "stream is unpacked from its BBFrames."),
+      .off      = offsetof(dvb_mux_t, lm_generic_ts),
+      .opts     = PO_RDONLY | PO_ADVANCED,
+    },
+    {
       .type     = PT_U16,
       .id       = "carrier_sid",
       .name     = N_("Carrier service"),
@@ -2836,6 +2846,7 @@ dvb_mux_multistream_transponder ( dvb_network_t *ln, const dvb_mux_t *lm )
   }
   if (!t->lm_multistream) {
     t->lm_multistream = 1;
+    t->lm_generic_ts = 0;
     idnode_changed(&t->mm_id);
   }
   return t;
@@ -2944,6 +2955,7 @@ dvb_mux_add_stream
 
   if (!t->lm_multistream) {
     t->lm_multistream = 1;
+    t->lm_generic_ts = 0;
     idnode_changed(&t->mm_id);
   }
   if (sm == NULL) {
