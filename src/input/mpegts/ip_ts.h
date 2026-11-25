@@ -27,7 +27,9 @@
  * The TS packets of a UDP payload: all of it, or what follows an RTP header
  * or a short header of the sender (sync bytes every 188 bytes up to the end
  * tell it). And the TS of one IPv4 group and port, from the IPv4 packets of
- * a GSE stream or of an MPE PID.
+ * a GSE stream or of an MPE PID: the one its datagrams carry, or the one
+ * made of the MPEG audio they carry in RTP (rtp_mpa.h; a service named by
+ * the group and port, the port is the ID of its TS).
  * Plain computation: no tvheadend state, no locks.
  */
 
@@ -43,7 +45,8 @@ typedef void (*ip_ts_cb_t) ( void *opaque, const uint8_t *ts, size_t len );
 typedef struct ip_ts_counts {
   uint64_t datagrams;           /* of the group and port */
   uint64_t packets;             /* TS packets given out */
-  uint64_t other;               /* datagrams that were no TS */
+  uint64_t audio;               /* datagrams with MPEG audio in RTP, made TS packets */
+  uint64_t other;               /* datagrams that were neither */
   uint64_t fragments;           /* IP fragments (not put together) */
   uint64_t rtp_lost;            /* RTP packets missing by their sequence numbers */
 } ip_ts_counts_t;
@@ -55,7 +58,7 @@ ip_ts_t *ip_ts_create ( uint32_t addr, uint16_t port, ip_ts_cb_t cb, void *opaqu
 void     ip_ts_destroy ( ip_ts_t *it );
 
 /* an IPv4 packet (n bytes): the TS packets of a datagram of the group go
- * to cb, whole ones */
+ * to cb, whole ones, and those made of its MPEG audio */
 void     ip_ts_ipv4 ( ip_ts_t *it, const uint8_t *d, size_t n );
 
 const ip_ts_counts_t *ip_ts_counts ( const ip_ts_t *it );

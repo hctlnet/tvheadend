@@ -18,7 +18,9 @@
  */
 
 #include "ip_ts.h"
+#include "rtp_mpa.h"
 
+#include <stdio.h>
 #include <stdlib.h>
 
 struct ip_ts {
@@ -27,6 +29,7 @@ struct ip_ts {
   ip_ts_cb_t     cb;
   void          *opaque;
   int            rtp_seq;       /* the last RTP sequence number, -1: none */
+  rtp_mpa_t     *mpa;           /* MPEG audio in RTP came: it makes the TS */
   ip_ts_counts_t c;
 };
 
@@ -90,7 +93,54 @@ ip_ts_create ( uint32_t addr, uint16_t port, ip_ts_cb_t cb, void *opaque )
 void
 ip_ts_destroy ( ip_ts_t *it )
 {
+  if (it == NULL)
+    return;
+  rtp_mpa_destroy(it->mpa);
   free(it);
+}
+
+/* RTP packets missing before this one, by its sequence number */
+static void
+ip_ts_rtp_seq ( ip_ts_t *it, const uint8_t *rtp )
+{
+  const int seq = (rtp[2] << 8) | rtp[3];
+
+  if (it->rtp_seq >= 0 && seq != ((it->rtp_seq + 1) & 0xffff))
+    it->c.rtp_lost += (uint16_t)(seq - it->rtp_seq - 1);
+  it->rtp_seq = seq;
+}
+
+static void
+ip_ts_mpa_cb ( void *opaque, const uint8_t *ts, size_t len )
+{
+  ip_ts_t *it = opaque;
+
+  it->c.packets += len / 188;
+  it->cb(it->opaque, ts, len);
+}
+
+/* a UDP payload of the group that is no TS: MPEG audio in RTP is made one */
+static int
+ip_ts_mpa ( ip_ts_t *it, const uint8_t *u, size_t ulen )
+{
+  size_t off;
+  size_t len;
+  int frag;
+  char name[32];
+
+  if (!rtp_mpa_payload(u, ulen, &off, &len, &frag))
+    return 0;
+  if (it->mpa == NULL) {
+    snprintf(name, sizeof(name), "%u.%u.%u.%u:%u", (it->addr >> 24) & 0xff,
+             (it->addr >> 16) & 0xff, (it->addr >> 8) & 0xff, it->addr & 0xff, it->port);
+    it->mpa = rtp_mpa_create(it->port, name, ip_ts_mpa_cb, it);
+    if (it->mpa == NULL)
+      return 0;
+  }
+  it->c.audio++;
+  ip_ts_rtp_seq(it, u);
+  rtp_mpa_packet(it->mpa, u, ulen);
+  return 1;
 }
 
 /* the UDP payload (*ulen bytes) of an IPv4 packet (n bytes) that is a whole
@@ -140,21 +190,17 @@ ip_ts_ipv4 ( ip_ts_t *it, const uint8_t *d, size_t n )
   size_t ulen;
   size_t off;
   int rtp_pt;
-  int seq;
   const uint8_t *u = ip_ts_udp(it, d, n, &ulen);
 
   if (u == NULL)
     return;
   if (!ip_ts_payload(u, ulen, &off, &rtp_pt)) {
-    it->c.other++;
+    if (!ip_ts_mpa(it, u, ulen))
+      it->c.other++;
     return;
   }
-  if (rtp_pt >= 0) {
-    seq = (u[2] << 8) | u[3];
-    if (it->rtp_seq >= 0 && seq != ((it->rtp_seq + 1) & 0xffff))
-      it->c.rtp_lost += (uint16_t)(seq - it->rtp_seq - 1);
-    it->rtp_seq = seq;
-  }
+  if (rtp_pt >= 0)
+    ip_ts_rtp_seq(it, u);
   it->c.packets += (ulen - off) / 188;
   it->cb(it->opaque, u + off, ulen - off);
 }

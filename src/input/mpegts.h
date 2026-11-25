@@ -429,8 +429,9 @@ enum mpegts_mux_type
   MM_TYPE_GSE      = 5,  /* GSE stream (may upgrade to DAB-GSE if DAB detected) */
   MM_TYPE_DAB_TSNI = 6,  /* DAB via TS NI V.11 (incrementing table_id 0x69-0x9A) */
   MM_TYPE_ISI      = 7,  /* the TS of one input stream of a multistream transponder */
-  MM_TYPE_IPTS_MPE = 8,  /* a TS in UDP datagrams (an IP multicast group) in MPE sections */
-  MM_TYPE_IPTS_GSE = 9,  /* a TS in UDP datagrams (an IP multicast group) in GSE */
+  MM_TYPE_IPTS_MPE = 8,  /* the stream of an IP multicast group in MPE sections: a TS in
+                            its UDP datagrams, or MPEG audio in RTP that is made one */
+  MM_TYPE_IPTS_GSE = 9,  /* ... in GSE */
 };
 
 /* a mux carried inside another one: in a PID of its transponder (DAB, a TS
@@ -452,7 +453,8 @@ int mpegts_mux_gse_transponder ( const struct mpegts_mux *mm );
 #define mpegts_mux_is_submux(mm) \
   (mpegts_mux_in_pid(mm) || mpegts_mux_in_bbframes(mm))
 
-/* a TS in the UDP datagrams of an IP multicast group (MPE, GSE) */
+/* the TS of an IP multicast group (MPE, GSE): the one in its UDP datagrams,
+ * or the one made of its MPEG audio in RTP (ip_ts.h) */
 #define mpegts_mux_is_ipts(mm) \
   ((mm)->mm_type == MM_TYPE_IPTS_MPE || (mm)->mm_type == MM_TYPE_IPTS_GSE)
 

@@ -26,7 +26,8 @@
 /*
  * IPv4 and IPv6 packets (of GSE, MPE): multicast, broadcast and unicast;
  * of multicast UDP the groups and ports and what they carry (MPEG-TS, also
- * after a header of the sender, RTP, MPEG-TS in RTP, DAB EDI); of unicast
+ * after a header of the sender, RTP, MPEG-TS or MPEG audio in RTP, RTCP,
+ * DAB EDI); of unicast
  * traffic the packets and bytes only, no addresses: it is somebody's own.
  * Plain computation: no tvheadend state, no locks.
  */
@@ -39,6 +40,8 @@ typedef enum {
   IP_FLOW_RTP,                /* RTP (its payload type) */
   IP_FLOW_RTP_TS,             /* MPEG-TS in RTP */
   IP_FLOW_EDI,                /* DAB EDI (AF or PF packets) */
+  IP_FLOW_RTP_MPA,            /* MPEG audio in RTP (payload type 14, RFC 2250) */
+  IP_FLOW_RTCP,               /* the reports of an RTP session */
 } ip_flow_kind_t;
 
 typedef struct ip_flow {

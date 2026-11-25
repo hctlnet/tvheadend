@@ -442,6 +442,7 @@ SRCS-MPEGTS-DVB = \
 	src/input/mpegts/ip_ts.c \
 	src/input/mpegts/t2mi.c \
 	src/input/mpegts/mpe.c \
+	src/input/mpegts/rtp_mpa.c \
 	src/input/mpegts/scanfile.c
 SRCS-${CONFIG_MPEGTS_DVB} += $(SRCS-MPEGTS-DVB)
 I18N-C += $(SRCS-MPEGTS-DVB)
