@@ -18,6 +18,7 @@
  */
 
 #include "input.h"
+#include "dvbbuffer/tvh_dvbbuffer.h"
 #include "mpegts_pidstats.h"
 #if ENABLE_MPEGTS_DVB
 #include "gse_stats_msg.h"
@@ -90,6 +91,32 @@ mpegts_network_scan_queue_del0 ( mpegts_mux_t *mm )
   }
 }
 
+/*
+ * The mux runs for nobody but subscriptions that keep it warm
+ * (SUBSCRIPTION_NOMOVE, dvbbuffer). A scan waits for a tuned mux to be
+ * started again; a warm one stays as it is, its scan would wait for good.
+ */
+static int
+mpegts_network_scan_only_warm ( mpegts_mux_t *mm )
+{
+  mpegts_input_t *mi = mm->mm_active->mmi_input;
+  const service_t *s;
+  const th_subscription_t *ths;
+  int warm = 0;
+  int other = 0;
+
+  tvh_mutex_lock(&mi->mi_output_lock);
+  LIST_FOREACH(s, &mm->mm_transports, s_active_link)
+    LIST_FOREACH(ths, &s->s_subscriptions, ths_service_link) {
+      if (ths->ths_flags & SUBSCRIPTION_NOMOVE)
+        warm++;
+      else
+        other++;
+    }
+  tvh_mutex_unlock(&mi->mi_output_lock);
+  return warm && !other;
+}
+
 static int
 mpegts_network_scan_do_mux ( mpegts_mux_queue_t *q, mpegts_mux_t *mm )
 {
@@ -99,8 +126,9 @@ mpegts_network_scan_do_mux ( mpegts_mux_queue_t *q, mpegts_mux_t *mm )
          state == MM_SCAN_STATE_IPEND ||
          state == MM_SCAN_STATE_ACTIVE);
 
-  /* Don't try to subscribe already tuned muxes */
-  if (mm->mm_active) {
+  /* Don't try to subscribe already tuned muxes - but one that is only
+   * kept warm: its scan runs on it as it is tuned */
+  if (mm->mm_active && !mpegts_network_scan_only_warm(mm)) {
     tvhtrace(LS_MPEGTS, "%s - scan skipped, mux is already tuned", mm->mm_nicename);
     return 0;
   }
@@ -869,6 +897,11 @@ mpegts_network_scan_mux_active ( mpegts_mux_t *mm )
   mm->mm_scan_init  = 0;
   TAILQ_INSERT_TAIL(&mn->mn_scan_active, mm, mm_scan_link);
 
+#if ENABLE_DVBBUFFER
+  /* the transponder stays tuned after the scan, as a recently used mux */
+  dvbbuffer_mux_scanned(mm, mm->mm_scan_flags);
+#endif
+
   /* Start DAB probe in parallel with SI scanning */
   mpegts_dab_probe_start(mm);
 
@@ -901,6 +934,9 @@ mpegts_network_scan_mux_reactivate ( mpegts_mux_t *mm )
   mm->mm_scan_init  = 0;
   mm->mm_scan_state = MM_SCAN_STATE_ACTIVE;
   TAILQ_INSERT_TAIL(&mn->mn_scan_active, mm, mm_scan_link);
+#if ENABLE_DVBBUFFER
+  dvbbuffer_mux_scanned(mm, mm->mm_scan_flags);
+#endif
   return 1;
 }
 

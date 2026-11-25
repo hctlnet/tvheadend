@@ -34,7 +34,15 @@ data, and plays within a fraction of a second.
 
 * **Recently used muxes**: with *Recently used muxes kept warm* above 0, the
   muxes last watched stay tuned with a ring buffer as well (with the lower
-  *Recently used mux weight*), so zapping back starts from the buffer.
+  *Recently used mux weight*), so zapping back starts from the buffer. A
+  scan asked for by a user and the first scan of a mux count like watching
+  it: the transponder stays tuned for the scans of its sub-muxes and for
+  the first look at what was found (not the idle scan).
+
+* **Dish with a rotor**: keeping a mux warm never moves a dish. A prebuffer
+  or recently used mux behind a rotor stays warm while the dish stands at
+  its position; once the dish has gone elsewhere it is tried again now and
+  then and comes back when the dish is there again.
 
 * **Live start**: a client should not play from the start of the backlog,
   seconds behind live. Profiles with *Instant zapping: start live* (Stream

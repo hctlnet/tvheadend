@@ -672,19 +672,34 @@ linuxdvb_frontend_get_priority ( mpegts_input_t *mi, mpegts_mux_t *mm, int flags
   return r;
 }
 
+/* the satconf a frontend tunes with: a slave has that of its master (the
+ * RF input) */
+static linuxdvb_satconf_t *
+linuxdvb_frontend_rf_satconf ( linuxdvb_frontend_t *lfe )
+{
+  linuxdvb_frontend_t *lfe2 = NULL;
+
+  if (lfe->lfe_master)
+    lfe2 = (linuxdvb_frontend_t *)idnode_find(lfe->lfe_master, &linuxdvb_frontend_class, NULL);
+  return lfe2 && lfe2->lfe_satconf ? lfe2->lfe_satconf : lfe->lfe_satconf;
+}
+
 static int
 linuxdvb_frontend_get_grace ( mpegts_input_t *mi, mpegts_mux_t *mm )
 {
-  linuxdvb_frontend_t *lfe = (linuxdvb_frontend_t*)mi, *lfe2 = NULL;
+  linuxdvb_frontend_t *lfe = (linuxdvb_frontend_t*)mi;
+  linuxdvb_satconf_t *ls = linuxdvb_frontend_rf_satconf(lfe);
+  mpegts_mux_instance_t *mmi = NULL;
   int r;
-  /* a slave tunes with the satconf of its master (the RF input): its
-   * switch and rotor times count for the slave as well */
-  if (lfe->lfe_master)
-    lfe2 = (linuxdvb_frontend_t *)idnode_find(lfe->lfe_master, &linuxdvb_frontend_class, NULL);
-  if (lfe2 && lfe2->lfe_satconf)
-    r = linuxdvb_satconf_get_grace(lfe2->lfe_satconf, mm);
-  else
-    r = lfe->lfe_satconf ? linuxdvb_satconf_get_grace(lfe->lfe_satconf, mm) : lfe->lfe_grace_period;
+  /* the switch and rotor times of the master count for a slave as well;
+   * the last start of the mux here did not move the dish (a mux kept
+   * warm): no rotor time */
+  if (ls && mm)
+    LIST_FOREACH(mmi, &mm->mm_instances, mmi_mux_link)
+      if (mmi->mmi_input == mi)
+        break;
+  r = ls ? linuxdvb_satconf_get_grace(ls, mm, mmi && (mmi->mmi_start_flags & SUBSCRIPTION_NOMOVE))
+         : lfe->lfe_grace_period;
 #if ENABLE_LINUXDVB_NEUMO
   /* a narrow carrier often needs more than one search, each takes 3-5 s
    * (see linuxdvb_frontend_search_again) */
@@ -763,6 +778,16 @@ linuxdvb_frontend_is_enabled
 #endif
   if (lfe->lfe_type != DVB_TYPE_S)
     goto ok;
+
+  /* a subscription that never moves a dish (a mux kept warm): not while
+   * the dish stands elsewhere (a mux running here is tuned, joining it
+   * moves nothing) */
+  if ((flags & SUBSCRIPTION_NOMOVE) &&
+      !(mm->mm_active && mm->mm_active->mmi_input == mi)) {
+    linuxdvb_satconf_t *ls = linuxdvb_frontend_rf_satconf(lfe);
+    if (ls && linuxdvb_satconf_dish_elsewhere(ls, mm))
+      return MI_IS_ENABLED_RETRY;
+  }
 
   /* check if any "blocking" tuner is running */
   LIST_FOREACH(th, &tvh_hardware, th_link) {

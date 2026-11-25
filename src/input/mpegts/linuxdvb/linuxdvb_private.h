@@ -586,6 +586,7 @@ linuxdvb_diseqc_t *linuxdvb_en50494_create0
 void linuxdvb_lnb_destroy     ( linuxdvb_lnb_t *lnb );
 void linuxdvb_switch_destroy  ( linuxdvb_diseqc_t *ld );
 void linuxdvb_rotor_destroy   ( linuxdvb_diseqc_t *ld );
+int linuxdvb_rotor_positioned ( linuxdvb_diseqc_t *ld, linuxdvb_satconf_t *lsp );
 void linuxdvb_en50494_destroy ( linuxdvb_diseqc_t *ld );
 
 htsmsg_t *linuxdvb_lnb_list     ( void *o, const char *lang );
@@ -635,6 +636,9 @@ int linuxdvb_satconf_get_priority
   ( linuxdvb_satconf_t *ls, mpegts_mux_t *mm );
 
 int linuxdvb_satconf_get_grace
+  ( linuxdvb_satconf_t *ls, mpegts_mux_t *mm, int nomove );
+
+int linuxdvb_satconf_dish_elsewhere
   ( linuxdvb_satconf_t *ls, mpegts_mux_t *mm );
 
 int linuxdvb_satconf_lnb_freq

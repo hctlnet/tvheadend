@@ -67,6 +67,9 @@ void dvbbuffer_mux_enabled_notify(void);
 /* a service starts (+1) or stops (-1): mux use for the recently used muxes
    kept warm (LRU), global_lock held */
 void dvbbuffer_service_used(struct mpegts_service *s, int delta);
+/* the scan of a mux starts (flags: SUBSCRIPTION_*SCAN): its transponder
+   counts as a recently used mux too, global_lock held */
+void dvbbuffer_mux_scanned(struct mpegts_mux *mm, int flags);
 
 /* packets of one service's ring backlog at most (buffer_sec at 25 Mbit/s):
  * the descrambler queues that many until the first key, and those of 3 s

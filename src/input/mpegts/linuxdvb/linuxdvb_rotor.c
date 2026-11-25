@@ -424,6 +424,18 @@ linuxdvb_rotor_grace
   return res;
 }
 
+/* the dish went to the position of the rotor last (not: another one, or
+ * not moved from here yet) */
+int
+linuxdvb_rotor_positioned
+  ( linuxdvb_diseqc_t *ld, linuxdvb_satconf_t *lsp )
+{
+  linuxdvb_rotor_t *lr = (linuxdvb_rotor_t *)ld;
+  int pos = lsp->ls_last_orbital_pos;
+
+  return pos && abs(pos_to_integer(lr->lr_sat_lon) - pos) <= 2;
+}
+
 static int
 linuxdvb_rotor_check_orbital_pos
   ( linuxdvb_rotor_t *lr, dvb_mux_t *lm, linuxdvb_satconf_ele_t *ls )
@@ -432,10 +444,7 @@ linuxdvb_rotor_check_orbital_pos
   int pos = lsp->ls_last_orbital_pos;
   char dir;
 
-  if (!pos)
-    return 0;
-
-  if (abs(pos_to_integer(lr->lr_sat_lon) - pos) > 2)
+  if (!linuxdvb_rotor_positioned((linuxdvb_diseqc_t *)lr, lsp))
     return 0;
 
   dir = 'E';
@@ -523,6 +532,15 @@ linuxdvb_rotor_tune
 
   if (linuxdvb_rotor_check_orbital_pos(lr, lm, ls))
     return 0;
+
+  /* a start that must not move the dish (a mux kept warm): the frontend
+   * keeps it away while the dish is known to stand elsewhere, this is for
+   * a dish that left between its check and the tune */
+  if (lsp->ls_mmi && (lsp->ls_mmi->mmi_start_flags & SUBSCRIPTION_NOMOVE)) {
+    tvhdebug(LS_DISEQC, "rotor not moved to %0.1f%c for a mux kept warm",
+             fabs(lr->lr_sat_lon), (lr->lr_sat_lon > 0.0) ? 'E' : 'W');
+    return -1;
+  }
 
   /* Force to 18v (quicker movement) */
   if (linuxdvb_satconf_start(lsp, MINMAX(lr->lr_powerup_time, 10, 500), 1))

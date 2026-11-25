@@ -909,7 +909,11 @@ const idclass_t dvbbuffer_conf_class = {
       .desc   = N_("Besides the prebuffer muxes, this many of the muxes "
                    "last watched stay tuned with a ring buffer (it starts "
                    "while watching), so zapping back starts from the "
-                   "buffer. 0 disables it."),
+                   "buffer. A scan asked for by a user and the first scan "
+                   "of a mux count like watching it: the transponder stays "
+                   "tuned for what follows. A mux behind a rotor stays warm only while "
+                   "the dish stands at its position: keeping a mux warm "
+                   "never moves a dish. 0 disables it."),
       .off    = offsetof(dvbbuffer_conf_t, lru_max),
       .group  = 2,
     },
