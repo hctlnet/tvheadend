@@ -247,6 +247,20 @@ const idclass_t dvb_network_class =
       .opts     = PO_ADVANCED,
     },
 #endif
+    {
+      .type     = PT_BOOL,
+      .id       = "tsid_zero",
+      .name     = N_("Accept zero value for TSID"),
+      .desc     = N_("Some transponders send their tables (PAT, SDT) with "
+                     "transport stream ID 0. Without this option tvheadend "
+                     "ignores them, and the mux gets no services unless "
+                     "the option of the mux itself is set. With it, TSID 0 "
+                     "is accepted on every mux of this network, also on "
+                     "the muxes found later."),
+      .off      = offsetof(dvb_network_t, ln_tsid_accept_zero),
+      .def.i    = 0,
+      .opts     = PO_EXPERT,
+    },
     {}
   }
 };

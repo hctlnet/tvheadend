@@ -35,6 +35,12 @@ typedef struct dvb_network
   int ln_dab_probe;
 
   /*
+   * A PAT or SDT with transport stream ID 0 is a real one for every mux of
+   * the network (as the option of a mux)
+   */
+  int ln_tsid_accept_zero;
+
+  /*
    * Its muxes are being loaded (a sub-mux may come before its transponder)
    */
   int ln_loading;
