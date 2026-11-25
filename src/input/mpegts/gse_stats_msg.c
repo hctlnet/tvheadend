@@ -38,6 +38,7 @@ ip_count_msg ( htsmsg_t *m, const char *name, const ip_count_t *s )
 static const char *ip_flow_kinds[] = {
   [IP_FLOW_UDP] = "udp", [IP_FLOW_TS] = "ts", [IP_FLOW_RTP] = "rtp",
   [IP_FLOW_RTP_TS] = "rtp-ts", [IP_FLOW_EDI] = "edi",
+  [IP_FLOW_RTP_MPA] = "rtp-mpa", [IP_FLOW_RTCP] = "rtcp",
 };
 
 typedef struct ip_proto_count {

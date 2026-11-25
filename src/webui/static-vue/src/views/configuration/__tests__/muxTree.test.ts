@@ -136,7 +136,7 @@ describe('buildMuxTree', () => {
     expect(labels(tree[0].children)).toEqual(['ISI 1'])
     expect(labels(tree[0].children[0].children)).toEqual(['239.1.2.4:1234'])
     expect(labels(tree[1].children)).toEqual(['239.1.2.3:5000'])
-    expect(muxTypeName(MUX_TYPE_IPTS_GSE)).toBe('TS in IP (GSE)')
+    expect(muxTypeName(MUX_TYPE_IPTS_GSE)).toBe('IP stream (GSE)')
   })
 
   it('keeps a sub-mux whose transponder is missing at the top, marked', () => {

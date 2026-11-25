@@ -104,8 +104,8 @@ const TYPE_LABELS: Record<number, () => string> = {
   [MUX_TYPE_DAB_TSNI]: () => t('DAB-TSNI'),
   [MUX_TYPE_DAB_GSE]: () => t('DAB-GSE'),
   [MUX_TYPE_GSE]: () => t('GSE'),
-  [MUX_TYPE_IPTS_MPE]: () => t('TS in IP (MPE)'),
-  [MUX_TYPE_IPTS_GSE]: () => t('TS in IP (GSE)'),
+  [MUX_TYPE_IPTS_MPE]: () => t('IP stream (MPE)'),
+  [MUX_TYPE_IPTS_GSE]: () => t('IP stream (GSE)'),
 }
 
 export function muxTypeName(type: number | undefined): string {

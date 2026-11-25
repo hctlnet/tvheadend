@@ -190,7 +190,7 @@ submux_input_stream ( mpegts_submux_t *sm, const uint8_t *data, size_t len )
 }
 
 /* a TS in IP: the IPv4 packets of the GSE stream or of the MPE PID, the TS
- * packets of the datagrams of its group */
+ * packets of the datagrams of its group or those made of its RTP audio */
 static void
 submux_ipts_out ( void *opaque, const uint8_t *ts, size_t len )
 {
@@ -425,9 +425,9 @@ submux_free ( mpegts_submux_t *sm )
   if (sm->sm_ipts) {
     const ip_ts_counts_t *c = ip_ts_counts(sm->sm_ipts);
     tvhdebug(LS_MPEGTS, "%s - %"PRIu64" datagrams of its group, %"PRIu64" TS packets, "
-             "%"PRIu64" datagrams without a TS, %"PRIu64" fragments, %"PRIu64" RTP "
-             "packets lost", sm->sm_mmi->mmi_mux->mm_nicename, c->datagrams, c->packets,
-             c->other, c->fragments, c->rtp_lost);
+             "%"PRIu64" datagrams with RTP audio, %"PRIu64" with neither, %"PRIu64" "
+             "fragments, %"PRIu64" RTP packets lost", sm->sm_mmi->mmi_mux->mm_nicename,
+             c->datagrams, c->packets, c->audio, c->other, c->fragments, c->rtp_lost);
     ip_ts_destroy(sm->sm_ipts);
   }
   gse_bbframes_destroy(sm->sm_gb);

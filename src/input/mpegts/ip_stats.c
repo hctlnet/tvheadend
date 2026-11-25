@@ -19,13 +19,39 @@
 
 #include "ip_stats.h"
 #include "ip_ts.h"
+#include "rtp_mpa.h"
 
 #include <string.h>
 #include <stdlib.h>
 
 /* the first datagrams of a group tell what it carries: one that is cut or
- * of another kind may come first */
+ * of another kind may come first, and one with a later part of an audio
+ * frame tells RTP only */
 #define IP_FLOW_KIND_PACKETS 8
+
+/* what a UDP payload that is no TS has of RTP: MPEG audio, the reports of
+ * a session, or packets of another payload type */
+static ip_flow_kind_t
+ip_rtp_kind ( const uint8_t *d, size_t n, int *rtp_pt )
+{
+  size_t off;
+  size_t len;
+  int frag;
+
+  if (rtp_mpa_payload(d, n, &off, &len, &frag) && frag == 0) {
+    *rtp_pt = RTP_MPA_PT;
+    return IP_FLOW_RTP_MPA;
+  }
+  if (n < 8 || (d[0] >> 6) != 2)
+    return IP_FLOW_UDP;
+  /* RTCP: a sender or receiver report comes first, with its length */
+  if ((d[1] == 200 || d[1] == 201) && 4 * (1 + (((size_t)d[2] << 8) | d[3])) <= n)
+    return IP_FLOW_RTCP;
+  if (n < 12)
+    return IP_FLOW_UDP;
+  *rtp_pt = d[1] & 0x7f;
+  return IP_FLOW_RTP;
+}
 
 /* what a UDP payload is */
 static ip_flow_kind_t
@@ -47,11 +73,7 @@ ip_udp_kind ( const uint8_t *d, size_t n, int *rtp_pt, int *ts_hdr )
   }
   if (n >= 2 && (d[0] == 'A' || d[0] == 'P') && d[1] == 'F')
     return IP_FLOW_EDI;
-  if (n >= 12 && (d[0] >> 6) == 2) {
-    *rtp_pt = d[1] & 0x7f;
-    return IP_FLOW_RTP;
-  }
-  return IP_FLOW_UDP;
+  return ip_rtp_kind(d, n, rtp_pt);
 }
 
 static void
@@ -59,8 +81,11 @@ ip_flow ( ip_stats_t *s, int v6, const uint8_t *addr, uint16_t port,
           const uint8_t *payload, size_t n )
 {
   ip_flow_t *f;
+  ip_flow_kind_t kind;
   size_t alen = v6 ? 16 : 4;
   int i;
+  int rtp_pt;
+  int ts_hdr;
 
   for (i = 0; i < s->nflows; i++) {
     f = &s->flows[i];
@@ -81,8 +106,15 @@ ip_flow ( ip_stats_t *s, int v6, const uint8_t *addr, uint16_t port,
     f->rtp_pt = -1;
   }
   f = &s->flows[i];
-  if (f->kind == IP_FLOW_UDP && f->packets < IP_FLOW_KIND_PACKETS)
-    f->kind = ip_udp_kind(payload, n, &f->rtp_pt, &f->ts_hdr);
+  if (f->packets < IP_FLOW_KIND_PACKETS &&
+      (f->kind == IP_FLOW_UDP || f->kind == IP_FLOW_RTP)) {
+    kind = ip_udp_kind(payload, n, &rtp_pt, &ts_hdr);
+    if (kind != IP_FLOW_UDP && (f->kind == IP_FLOW_UDP || kind == IP_FLOW_RTP_MPA)) {
+      f->kind = kind;
+      f->rtp_pt = rtp_pt;
+      f->ts_hdr = ts_hdr;
+    }
+  }
   f->packets++;
   f->bytes += n;
 }
