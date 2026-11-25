@@ -498,6 +498,25 @@ isi_probe_single(mpegts_mux_t *mm, int matype)
   return 1;
 }
 
+/* the mux became a GSE mux while it is tuned as the TS mux it was (its scan
+ * ends now; something else may keep it tuned, a warm mux): the tuner
+ * delivers it in BBFrames from now on, so it starts anew */
+static void
+isi_probe_retune_cb(void *aux, int disarmed)
+{
+  char *uuid = aux;
+  mpegts_mux_t *mm;
+
+  if (!disarmed) {
+    tvh_mutex_lock(&global_lock);
+    mm = mpegts_mux_find(uuid);
+    if (mm && mm->mm_active)
+      mm->mm_stop(mm, 1, SM_CODE_SOURCE_RECONFIGURED);
+    tvh_mutex_unlock(&global_lock);
+  }
+  free(uuid);
+}
+
 /*
  * Start ISI probe on a mux
  * Remembers the tuner the scan runs on for mpegts_isi_probe_complete()
@@ -558,7 +577,7 @@ mpegts_isi_probe_start(mpegts_mux_t *mm)
 
   /* a multistream transponder in BBFrame mode: the headers tell the streams
    * too (the driver list may be empty), from the PID of the BBFrames */
-  if (lfe->lfe_bbframes && mm->mm_secondary_cb == NULL) {
+  if (lfe->lfe_bbframes && !lfe->lfe_bbframes_ts && mm->mm_secondary_cb == NULL) {
     ctx->tap = 1;
     isi_probe_set_cb(mm, ctx);
     mm->mm_update_pids_flag = 1;
@@ -662,8 +681,23 @@ mpegts_isi_probe_complete(mpegts_mux_t *mm, int evaluate, int no_tables)
    * has from an earlier lock (the frames of the GSE mux tell what it is) */
   else if (locked && no_tables && lfe->lfe_supports_bbframes) {
     int matype = lfe->lfe_matype >= 0 ? lfe->lfe_matype : ((dvb_mux_t *)mm)->lm_matype;
-    if (matype >= 0 && (matype & 0x20) && (matype >> 6) != 3)
+    dvb_mux_t *dm = (dvb_mux_t *)mm;
+    /* a mux whose TS is unpacked from the BBFrames of its generic stream
+     * stays one without tables - unless frames came and none of them had
+     * TS packets: the stream is another one now */
+    if (dm->lm_generic_ts && lfe->lfe_bbframes_ts &&
+        lfe->lfe_bbts_frames >= 64 && lfe->lfe_bbts_ts == 0) {
+      tvhinfo(LS_MPEGTS, "mux %s: no TS packets in the %"PRIu64" BBFrames of its "
+              "stream any more", mm->mm_nicename, lfe->lfe_bbts_frames);
+      dm->lm_generic_ts = 0;
+      idnode_changed(&mm->mm_id);
+    }
+    if (!dm->lm_generic_ts && matype >= 0 && (matype & 0x20) && (matype >> 6) != 3)
       found = became_gse = isi_probe_single(mm, matype);
+    if (became_gse) {
+      char ubuf[UUID_HEX_SIZE];
+      tasklet_arm_alloc(isi_probe_retune_cb, strdup(idnode_uuid_as_str(&mm->mm_id, ubuf)));
+    }
   }
 
   free(ctx);

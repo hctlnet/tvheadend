@@ -19,6 +19,7 @@
 
 #include "tvheadend.h"
 #include "linuxdvb_private.h"
+#include "input/mpegts/bbframe.h"
 #include "config.h"
 #include "notify.h"
 #include "atomic.h"
@@ -46,13 +47,45 @@
 #define LINUXDVB_BBFRAMES_DVR_BUFFER (16 * 1024 * 1024)
 
 /* a multistream transponder tuned so that all input streams come; a GSE
- * mux (the single stream of its transponder is no TS) comes in BBFrames too */
+ * mux (the single stream of its transponder is no TS) comes in BBFrames too,
+ * and so does a mux whose TS is in a generic stream (lm_generic_ts): that
+ * one is unpacked here, linuxdvb_frontend_input_thread() */
 static int
 linuxdvb_frontend_bbframes_mux ( linuxdvb_frontend_t *lfe, mpegts_mux_t *mm )
 {
   return lfe->lfe_supports_bbframes && mm != NULL &&
          idnode_is_instance(&mm->mm_id, &dvb_mux_class) &&
-         (((dvb_mux_t *)mm)->lm_multistream || mpegts_mux_gse_transponder(mm));
+         (((dvb_mux_t *)mm)->lm_multistream || mpegts_mux_gse_transponder(mm) ||
+          ((dvb_mux_t *)mm)->lm_generic_ts);
+}
+
+static void
+linuxdvb_frontend_bbts_cb ( void *opaque, const uint8_t *ts )
+{
+  sbuf_append(opaque, ts, 188);
+}
+
+/* the packets with the BBFrames, as read from the dvr: the TS packets of
+ * the frames to out (the input thread) */
+static void
+linuxdvb_frontend_bbts
+  ( linuxdvb_frontend_t *lfe, bbframe_split_t *bs, sbuf_t *in, sbuf_t *out )
+{
+  const uint8_t *p = in->sb_data;
+  size_t len = in->sb_ptr, off = 0;
+
+  while (len - off >= 188) {
+    if (p[off] != 0x47) {     /* out of step: on to the next packet */
+      off++;
+      continue;
+    }
+    if ((((p[off + 1] & 0x1f) << 8) | p[off + 2]) == DVB_BBFRAMES_PID)
+      bbframe_split_ts(bs, p + off, linuxdvb_frontend_bbts_cb, out);
+    off += 188;
+  }
+  sbuf_cut(in, off);
+  lfe->lfe_bbts_frames = bs->bs_ts.bt_frames;
+  lfe->lfe_bbts_ts     = bs->bs_ts.bt_ts_frames;
 }
 #endif
 
@@ -734,8 +767,9 @@ linuxdvb_frontend_delivers ( const linuxdvb_frontend_t *lfe, mpegts_mux_t *mm )
   const dvb_mux_t *lm = idnode_is_instance(&mm->mm_id, &dvb_mux_class) ? (dvb_mux_t *)mm : NULL;
 
   /* a multistream transponder delivers its input streams as BBFrames (others
-   * tune the streams themselves) */
-  if (lm && lm->lm_multistream && !lfe->lfe_supports_bbframes)
+   * tune the streams themselves), and a TS in a generic stream is unpacked
+   * from the BBFrames */
+  if (lm && (lm->lm_multistream || lm->lm_generic_ts) && !lfe->lfe_supports_bbframes)
     return 0;
   /* ... the input streams of a multistream transponder come from it then
    * (the sub-mux input) */
@@ -1232,6 +1266,12 @@ linuxdvb_frontend_update_pids
    * mux the frames */
   if ((mm->mm_isi_probe_ctx || mm->mm_gse_probe_ctx) && lfe->lfe_bbframes)
     mpegts_pid_add(&lfe->lfe_pids, DVB_BBFRAMES_PID, MPS_WEIGHT_RAW);
+  /* the TS is unpacked from the BBFrames: their PID is all there is to
+   * filter, the PIDs of the mux are in the frames */
+  if (lfe->lfe_bbframes_ts) {
+    mpegts_pid_done(&lfe->lfe_pids);
+    mpegts_pid_add(&lfe->lfe_pids, DVB_BBFRAMES_PID, MPS_WEIGHT_RAW);
+  }
 #endif
   tvh_mutex_unlock(&lfe->lfe_dvr_lock);
 
@@ -2329,6 +2369,19 @@ linuxdvb_frontend_input_thread ( void *aux )
   mpegts_apids_t tuned;
   sbuf_t sb;
   int i, dvr = -1, nfds, nodata = 4;
+#if ENABLE_LINUXDVB_NEUMO
+  /* a TS in a generic stream: out of the BBFrames */
+  const int bbts = lfe->lfe_bbframes_ts;
+  bbframe_split_t *bs = NULL;
+  sbuf_t sb_ts;
+
+  if (bbts) {
+    if ((bs = malloc(sizeof(*bs))) == NULL)
+      return NULL;
+    bbframe_split_init(bs, -1);
+    sbuf_init(&sb_ts);
+  }
+#endif
 
   mpegts_pid_init(&tuned);
   for (i = 0; i < ARRAY_SIZE(pids); i++) {
@@ -2424,9 +2477,25 @@ linuxdvb_frontend_input_thread ( void *aux )
     }
     
     /* Process */
+#if ENABLE_LINUXDVB_NEUMO
+    if (bbts) {
+      linuxdvb_frontend_bbts(lfe, bs, &sb, &sb_ts);
+      mpegts_input_recv_packets(mmi, &sb_ts, 0, NULL);
+      continue;
+    }
+#endif
     mpegts_input_recv_packets(mmi, &sb, 0, NULL);
   }
 
+#if ENABLE_LINUXDVB_NEUMO
+  if (bbts) {
+    tvhdebug(LS_LINUXDVB, "%s - TS out of the BBFrames: %"PRIu64" frames, %"PRIu64" with "
+             "TS packets, %"PRIu64" lost, %"PRIu64" resyncs", name, bs->bs_ts.bt_frames,
+             bs->bs_ts.bt_ts_frames, bs->bs_ts.bt_errors, bs->bs_ts.bt_resyncs);
+    sbuf_free(&sb_ts);
+    free(bs);
+  }
+#endif
   sbuf_free(&sb);
   tvhpoll_destroy(efd);
   for (i = 0; i < ARRAY_SIZE(pids); i++)
@@ -2875,6 +2944,11 @@ linuxdvb_frontend_tune0
 #if ENABLE_LINUXDVB_NEUMO
     /* the driver keeps the BBFrame output across DTV_CLEAR: set it always */
     lfe->lfe_bbframes = linuxdvb_frontend_bbframes_mux(lfe, (mpegts_mux_t *)lm);
+    /* ... the TS of a TS mux is unpacked from them; set to another type by
+     * hand, the mux gets its frames as they are (its scan tells what it is) */
+    lfe->lfe_bbframes_ts = lfe->lfe_bbframes && lm->lm_generic_ts &&
+                           lm->mm_type == MM_TYPE_TS;
+    lfe->lfe_bbts_frames = lfe->lfe_bbts_ts = 0;
     if (lfe->lfe_supports_bbframes)
       S2CMD(DTV_OUTPUT_BBFRAMES, lfe->lfe_bbframes);
     /* Neumo driver: use blind tuning for auto-detection
