@@ -25,9 +25,9 @@
 
 /*
  * IPv4 and IPv6 packets (of GSE, MPE): multicast, broadcast and unicast;
- * of multicast UDP the groups and ports and what they carry (MPEG-TS, RTP,
- * MPEG-TS in RTP, DAB EDI); of unicast traffic the packets and bytes only,
- * no addresses: it is somebody's own.
+ * of multicast UDP the groups and ports and what they carry (MPEG-TS, also
+ * after a header of the sender, RTP, MPEG-TS in RTP, DAB EDI); of unicast
+ * traffic the packets and bytes only, no addresses: it is somebody's own.
  * Plain computation: no tvheadend state, no locks.
  */
 
@@ -48,6 +48,8 @@ typedef struct ip_flow {
   uint64_t packets, bytes;    /* bytes of the UDP payloads */
   ip_flow_kind_t kind;
   int      rtp_pt;            /* -1 not RTP */
+  int      ts_hdr;            /* MPEG-TS: bytes of a header of the sender
+                                 before the packets, 0 none */
 } ip_flow_t;
 
 typedef struct ip_count {
@@ -67,6 +69,9 @@ typedef struct ip_stats {
 /* an IPv4 or IPv6 packet (n bytes) */
 void ip_stats_ipv4 ( ip_stats_t *s, const uint8_t *d, size_t n );
 void ip_stats_ipv6 ( ip_stats_t *s, const uint8_t *d, size_t n );
+
+/* the packets o counted, added to s */
+void ip_stats_add ( ip_stats_t *s, const ip_stats_t *o );
 
 /* the flows by bytes */
 void ip_stats_sort ( ip_stats_t *s );

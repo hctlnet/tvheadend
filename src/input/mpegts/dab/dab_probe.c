@@ -18,8 +18,18 @@
 #include "dab_stream.h"
 /* MPE: tvheadend takes the datagrams out of the datagram sections of a PID
  * (mpe_pids_t), the IPv4 ones go to a libdvbdab streamer of the PID in
- * discovery mode */
+ * discovery mode. What the IP datagrams of the PIDs carry is counted too:
+ * it stays with the mux as its content, and a multicast group with a TS
+ * gets a mux of its own (dvb_mux_ipts_scan()) */
 #include "input/mpegts/mpe.h"
+#include "input/mpegts/gse_stats_msg.h"
+
+/* an MPE PID of the TS (the user pointer of its mpe_pid_t) */
+typedef struct dab_probe_mpe_pid {
+  dvbdab_streamer_t *streamer;    /* of its IPv4 datagrams */
+  ip_stats_t         ip;          /* what its IP datagrams carry */
+  uint64_t           v4, v6, other;
+} dab_probe_mpe_pid_t;
 
 /*
  * DAB probe context - simple callback-based scanner
@@ -33,7 +43,8 @@ typedef struct dab_probe_ctx {
   int                weight;
   int                waiting;
   mpe_pids_t         mpe;         /* the input thread, mi_output_lock; user:
-                                     the streamer of the PID */
+                                     the dab_probe_mpe_pid_t of the PID */
+  int64_t            mpe_first, mpe_last;  /* mclk of its first and last datagram */
 } dab_probe_ctx_t;
 
 /* Scanner timeout in milliseconds */
@@ -59,25 +70,44 @@ typedef struct dab_probe_ctx {
 static void
 dab_probe_mpe_datagram(void *opaque, mpe_pid_t *p, const mpe_datagram_t *d)
 {
+  dab_probe_ctx_t *dctx = opaque;
+  dab_probe_mpe_pid_t *s = p->user;
   dvbdab_streamer_config_t cfg;
 
-  (void)opaque;
-  if (d->ethertype != 0x0800)
+  if (s == NULL && (s = p->user = calloc(1, sizeof(*s))) == NULL)
     return;
-  if (p->user == NULL) {
+  dctx->mpe_last = mclk();
+  if (dctx->mpe_first == 0)
+    dctx->mpe_first = dctx->mpe_last;
+  if (d->ethertype == 0x86DD) {
+    s->v6++;
+    ip_stats_ipv6(&s->ip, d->data, d->len);
+    return;
+  }
+  if (d->ethertype != 0x0800) {
+    s->other++;
+    return;
+  }
+  s->v4++;
+  ip_stats_ipv4(&s->ip, d->data, d->len);
+  if (s->streamer == NULL) {
     memset(&cfg, 0, sizeof(cfg));
     cfg.format = DVBDAB_FORMAT_IPV4;
     cfg.pid = p->pid;
-    if ((p->user = dvbdab_streamer_create(&cfg)) == NULL)
+    if ((s->streamer = dvbdab_streamer_create(&cfg)) == NULL)
       return;
   }
-  dvbdab_streamer_feed(p->user, d->data, d->len);
+  dvbdab_streamer_feed(s->streamer, d->data, d->len);
 }
 
 static void
-dab_probe_mpe_streamer_free(void *streamer)
+dab_probe_mpe_pid_free(void *user)
 {
-  dvbdab_streamer_destroy(streamer);
+  dab_probe_mpe_pid_t *s = user;
+
+  if (s->streamer)
+    dvbdab_streamer_destroy(s->streamer);
+  free(s);
 }
 
 /* the ensembles of the MPE PIDs have their labels and services; an MPE
@@ -86,6 +116,7 @@ dab_probe_mpe_streamer_free(void *streamer)
 static int
 dab_probe_mpe_done(dab_probe_ctx_t *dctx)
 {
+  const dab_probe_mpe_pid_t *s;
   dvbdab_ensemble_t *e;
   int64_t elapsed = mclk() - dctx->started;
   int i, j, n, done = 1;
@@ -94,7 +125,8 @@ dab_probe_mpe_done(dab_probe_ctx_t *dctx)
     return 1;
   for (i = 0; i < dctx->mpe.n && done; i++) {
     n = 0;
-    e = dctx->mpe.p[i].user ? dvbdab_streamer_get_all_ensembles(dctx->mpe.p[i].user, &n) : NULL;
+    s = dctx->mpe.p[i].user;
+    e = s && s->streamer ? dvbdab_streamer_get_all_ensembles(s->streamer, &n) : NULL;
     if (n == 0 && elapsed < ms2mono(DAB_PROBE_MPE_NODAB_MS))
       done = 0;
     for (j = 0; j < n; j++)
@@ -526,25 +558,73 @@ mpegts_dab_probe_complete(mpegts_mux_t *mm, int evaluate)
     dvbdab_scanner_destroy(ctx->scanner);
   }
   {
+    dab_probe_mpe_pid_t *s;
+    const mpe_counts_t *c;
     dvbdab_ensemble_t *e;
+    dvb_mux_t *lm = (dvb_mux_t *)mm;
+    ip_stats_t *all = evaluate ? calloc(1, sizeof(*all)) : NULL;
+    htsmsg_t *l = NULL, *m = NULL, *pm;
+    char buf[256];
     int i, j, n;
     for (i = 0; i < ctx->mpe.n; i++) {
-      if (evaluate && ctx->mpe.p[i].user) {
-        e = dvbdab_streamer_get_all_ensembles(ctx->mpe.p[i].user, &n);
-        tvhdebug(LS_MPEGTS, "mux %s: MPE on PID %d: %" PRIu64 " datagrams, %" PRIu64
-                 " CRC errors, %d ensemble(s)", mm->mm_nicename, ctx->mpe.p[i].pid,
-                 mpe_counts(ctx->mpe.p[i].mpe)->datagrams,
-                 mpe_counts(ctx->mpe.p[i].mpe)->crc_errors, n);
-        for (j = 0; j < n; j++) {
-          e[j].source_pid = ctx->mpe.p[i].pid;
-          e[j].is_etina = e[j].is_tsni = e[j].is_gse = 0;
-          if (process_ensemble(mm, (dvb_network_t *)mm->mm_network, (dvb_mux_t *)mm, &e[j]))
-            found = 1;
-        }
-        dvbdab_streamer_free_all_ensembles(e, n);
+      s = ctx->mpe.p[i].user;
+      if (!evaluate || s == NULL)
+        continue;
+      c = mpe_counts(ctx->mpe.p[i].mpe);
+      n = 0;
+      e = s->streamer ? dvbdab_streamer_get_all_ensembles(s->streamer, &n) : NULL;
+      tvhdebug(LS_MPEGTS, "mux %s: MPE on PID %d: %" PRIu64 " datagrams, %" PRIu64
+               " CRC errors, %d ensemble(s)", mm->mm_nicename, ctx->mpe.p[i].pid,
+               c->datagrams, c->crc_errors, n);
+      for (j = 0; j < n; j++) {
+        e[j].source_pid = ctx->mpe.p[i].pid;
+        e[j].is_etina = e[j].is_tsni = e[j].is_gse = 0;
+        if (process_ensemble(mm, (dvb_network_t *)mm->mm_network, lm, &e[j]))
+          found = 1;
       }
+      if (e)
+        dvbdab_streamer_free_all_ensembles(e, n);
+      /* the groups of the PID with a TS: a mux each */
+      if (dvb_mux_ipts_scan(mm, ctx->mpe.p[i].pid, &s->ip) > 0)
+        found = 1;
+      /* what the PID carried */
+      if (c->datagrams == 0 && c->scrambled == 0)
+        continue;
+      if (l == NULL)
+        l = htsmsg_create_list();
+      pm = htsmsg_create_map();
+      htsmsg_add_u32(pm, "pid", ctx->mpe.p[i].pid);
+      htsmsg_add_s64(pm, "sections", c->sections);
+      htsmsg_add_s64(pm, "datagrams", c->datagrams);
+      htsmsg_add_s64(pm, "crc_errors", c->crc_errors);
+      htsmsg_add_s64(pm, "scrambled", c->scrambled);
+      htsmsg_add_s64(pm, "lost", c->lost);
+      htsmsg_add_s64(pm, "ipv4", s->v4);
+      htsmsg_add_s64(pm, "ipv6", s->v6);
+      htsmsg_add_s64(pm, "other", s->other);
+      htsmsg_add_msg(l, NULL, pm);
+      if (all)
+        ip_stats_add(all, &s->ip);
     }
-    mpe_pids_clear(&ctx->mpe, dab_probe_mpe_streamer_free);
+    if (evaluate) {
+      if (l) {
+        m = htsmsg_create_map();
+        htsmsg_add_msg(m, "mpe", l);
+        if (all) {
+          ip_stats_sort(all);
+          ip_stats_msg(m, all);
+        }
+        htsmsg_add_s64(m, "us", ctx->mpe_last - ctx->mpe_first);
+        content_msg_text(m, buf, sizeof(buf));
+        tvhinfo(LS_MPEGTS, "mux %s: %s", mm->mm_nicename, buf);
+      }
+      /* what its MPE PIDs carried stays with the mux; without any now,
+       * what an earlier scan said of them goes */
+      if (m || (lm->lm_gse_content && htsmsg_get_list(lm->lm_gse_content, "mpe")))
+        dvb_mux_set_gse_content(lm, m);
+    }
+    free(all);
+    mpe_pids_clear(&ctx->mpe, dab_probe_mpe_pid_free);
   }
 
   free(ctx);

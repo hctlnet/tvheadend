@@ -91,6 +91,8 @@ export const MUX_TYPE_DAB_GSE = 4
 export const MUX_TYPE_GSE = 5
 export const MUX_TYPE_DAB_TSNI = 6
 export const MUX_TYPE_ISI = 7
+export const MUX_TYPE_IPTS_MPE = 8
+export const MUX_TYPE_IPTS_GSE = 9
 
 /* the type as the tree shows it */
 const TYPE_LABELS: Record<number, () => string> = {
@@ -102,6 +104,8 @@ const TYPE_LABELS: Record<number, () => string> = {
   [MUX_TYPE_DAB_TSNI]: () => t('DAB-TSNI'),
   [MUX_TYPE_DAB_GSE]: () => t('DAB-GSE'),
   [MUX_TYPE_GSE]: () => t('GSE'),
+  [MUX_TYPE_IPTS_MPE]: () => t('TS in IP (MPE)'),
+  [MUX_TYPE_IPTS_GSE]: () => t('TS in IP (GSE)'),
 }
 
 export function muxTypeName(type: number | undefined): string {

@@ -121,6 +121,8 @@ import {
   MUX_TYPE_DAB_GSE,
   MUX_TYPE_DAB_MPE,
   MUX_TYPE_DAB_TSNI,
+  MUX_TYPE_IPTS_GSE,
+  MUX_TYPE_IPTS_MPE,
   MUX_TYPE_T2MI,
   MUX_TYPE_TS,
   muxSearchText,
@@ -1323,9 +1325,16 @@ function scanStateLabel(row: MuxRow): string {
   return row.scan_state === SCAN_STATE_ACTIVE ? t('scanning…') : t('queued')
 }
 
-/* the sub-muxes in a PID (T2MI, DAB in a PID), DAB over IP (address) */
-const PID_TYPES = new Set([MUX_TYPE_T2MI, MUX_TYPE_DAB_MPE, MUX_TYPE_DAB_ETI, MUX_TYPE_DAB_TSNI])
-const ADDRESS_TYPES = new Set([MUX_TYPE_DAB_MPE, MUX_TYPE_DAB_GSE])
+/* the sub-muxes in a PID (T2MI, DAB or a TS in IP in a PID), DAB or a TS
+ * over IP (address) */
+const PID_TYPES = new Set([
+  MUX_TYPE_T2MI,
+  MUX_TYPE_DAB_MPE,
+  MUX_TYPE_DAB_ETI,
+  MUX_TYPE_DAB_TSNI,
+  MUX_TYPE_IPTS_MPE,
+])
+const ADDRESS_TYPES = new Set([MUX_TYPE_DAB_MPE, MUX_TYPE_DAB_GSE, MUX_TYPE_IPTS_MPE, MUX_TYPE_IPTS_GSE])
 
 function pidEditable(row: MuxRow): boolean {
   return PID_TYPES.has(row.tstype ?? MUX_TYPE_TS) && !!row.parent_mux
@@ -1656,11 +1665,12 @@ onMounted(loadNetworks)
                 <span v-if="r.node.row.pnetwork_name" class="mux-tree__provider">
                   {{ r.node.row.pnetwork_name }}
                 </span>
-                <!-- what a GSE stream carried at its last scan (the cell cuts it, the title has it) -->
+                <!-- what a GSE stream or the MPE PIDs of a TS carried at the last scan (the cell
+                     cuts it, the title has it) -->
                 <span
                   v-if="r.node.row?.gse_content"
                   class="mux-tree__tuning mux-tree__gse"
-                  :title="t('What the GSE stream carried at its last scan: {0}', r.node.row.gse_content)"
+                  :title="t('What the mux carried at its last scan: {0}', r.node.row.gse_content)"
                 >
                   {{ r.node.row.gse_content }}
                 </span>
