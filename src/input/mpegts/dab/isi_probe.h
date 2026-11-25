@@ -34,12 +34,15 @@ void mpegts_isi_probe_start(struct mpegts_mux *mm);
  * Complete ISI probe and process results
  *
  * Reads ISI list from driver and creates child muxes for each discovered ISI.
- * Sets mm_type to MM_TYPE_GSE for GSE streams (based on MATYPE).
+ * Sets mm_type to MM_TYPE_GSE for GSE streams (based on MATYPE). A mux
+ * without tables whose single input stream is no TS becomes a GSE mux itself.
  *
- * @param mm  Mux being probed
- * @return    Number of child muxes created
+ * @param mm         Mux being probed
+ * @param evaluate   0: the scan was cancelled, nothing is created
+ * @param no_tables  the scan read no tables
+ * @return           Number of child muxes created (1: the mux became GSE)
  */
-int mpegts_isi_probe_complete(struct mpegts_mux *mm, int evaluate);
+int mpegts_isi_probe_complete(struct mpegts_mux *mm, int evaluate, int no_tables);
 
 /**
  * Check if ISI probe is done

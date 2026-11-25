@@ -10,6 +10,9 @@
  *    - MATYPE bits 7-6 = 11: Transport Stream (MM_TYPE_TS)
  *    - MATYPE bits 7-6 = 00/01: GSE stream (MM_TYPE_GSE)
  *
+ *  A transponder with a single input stream that is no TS has no input
+ *  streams to split: its mux becomes a GSE mux itself.
+ *
  *  Copyright (C) 2025
  *
  *  This program is free software: you can redistribute it and/or modify
@@ -93,6 +96,9 @@ isi_probe_packet_cb(void *aux, const uint8_t *pkt, int len)
   for ( ; len >= 188; pkt += 188, len -= 188)
     if ((((pkt[1] & 0x1f) << 8) | pkt[2]) == DVB_BBFRAMES_PID &&
         bbframe_packet_header(pkt, &isi, &matype) == 0) {
+      /* a single input stream: MATYPE-2 is reserved then, no ISI */
+      if (matype & 0x20)
+        continue;
       isi_probe_follow(ctx, isi);
       ctx->seen[isi >> 3] |= 1 << (isi & 7);
       ctx->matype[isi] = matype;
@@ -462,6 +468,30 @@ isi_probe_create_muxes(mpegts_mux_t *mm, const uint8_t *isi_list, int isi_count,
 }
 
 /*
+ * A single input stream that is no TS (MATYPE-1: generic or GSE-HEM - 36E
+ * 12734H: GSE with a DAB feed in it): the transponder has nothing to split,
+ * and no TS as it is tuned. Its mux becomes a GSE mux: a tuner that delivers
+ * BBFrames takes it so, the GSE probe reads what the stream carries at the
+ * scan that follows (the end of this one queues it, for the new type), and
+ * the DAB ensembles in it become its sub-muxes. Not a mux with sub-muxes:
+ * they are carried in its TS. Returns 1 when the mux became one.
+ */
+static int
+isi_probe_single(mpegts_mux_t *mm, int matype)
+{
+  dvb_mux_t *dm = (dvb_mux_t *)mm;
+
+  if (dm->lm_multistream || isi_has_submuxes((dvb_network_t *)mm->mm_network, dm))
+    return 0;
+  mm->mm_type = MM_TYPE_GSE;
+  mpegts_mux_update_nice_name(mm);
+  idnode_changed(&mm->mm_id);
+  tvhinfo(LS_MPEGTS, "mux %s: a single input stream that is no TS (MATYPE 0x%02X): "
+          "a GSE mux now", mm->mm_nicename, matype);
+  return 1;
+}
+
+/*
  * Start ISI probe on a mux
  * Remembers the tuner the scan runs on for mpegts_isi_probe_complete()
  */
@@ -503,10 +533,10 @@ mpegts_isi_probe_start(mpegts_mux_t *mm)
   return;
 #endif
 
-  /* Only for DVB-S2 */
+  /* Only for DVB-S2 - looked at when the scan ends: the tune may correct
+   * the delivery system the mux was entered with (a DVB-S2 carrier from a
+   * list that has it as DVB-S) */
   dm = (dvb_mux_t *)mm;
-  if (dm->lm_tuning.dmc_fe_delsys != DVB_SYS_DVBS2)
-    return;
 
   /* Allocate context with frontend FD */
   ctx = calloc(1, sizeof(*ctx));
@@ -528,14 +558,16 @@ mpegts_isi_probe_start(mpegts_mux_t *mm)
     mpegts_mux_update_pids(mm);
   }
 
-  tvhdebug(LS_MPEGTS, "mux %s: ISI probe started on %s", mm->mm_nicename, lfe->lfe_fe_path);
+  if (dm->lm_tuning.dmc_fe_delsys == DVB_SYS_DVBS2)
+    tvhdebug(LS_MPEGTS, "mux %s: ISI probe started on %s", mm->mm_nicename, lfe->lfe_fe_path);
 }
 
 /*
  * Complete ISI probe - read ISI list from driver and create muxes
+ * no_tables: the scan of the mux read no tables (it has no TS as it is tuned)
  */
 int
-mpegts_isi_probe_complete(mpegts_mux_t *mm, int evaluate)
+mpegts_isi_probe_complete(mpegts_mux_t *mm, int evaluate, int no_tables)
 {
   isi_probe_ctx_t *ctx = mm->mm_isi_probe_ctx;
   const linuxdvb_frontend_t *lfe = NULL;
@@ -545,6 +577,7 @@ mpegts_isi_probe_complete(mpegts_mux_t *mm, int evaluate)
   int isi_count = 0;
   int found = 0;
   int locked = 0;
+  int became_gse = 0;
 
   if (!ctx)
     return 0;
@@ -556,6 +589,12 @@ mpegts_isi_probe_complete(mpegts_mux_t *mm, int evaluate)
       isi_probe_set_cb(mm, NULL);
     mm->mm_update_pids_flag = 1;
     mpegts_mux_update_pids(mm);
+  }
+
+  /* no DVB-S2 mux, after its tune too: no input streams */
+  if (((dvb_mux_t *)mm)->lm_tuning.dmc_fe_delsys != DVB_SYS_DVBS2) {
+    free(ctx);
+    return 0;
   }
 
   /* Read ISI list from the driver of the tuner the scan ran on - only if it
@@ -606,14 +645,26 @@ mpegts_isi_probe_complete(mpegts_mux_t *mm, int evaluate)
   if (isi_count > 0) {
     found = isi_probe_create_muxes(mm, isi_list, isi_count, matype_list, upl_list);
   }
+  /* no input streams, and the demodulator told a single stream that is no
+   * TS: the mux has no tables as it is tuned, its tuner delivers BBFrames -
+   * a GSE mux. One with a TS as it is tuned stays as it is, whatever its
+   * MATYPE says. The MATYPE is the one of this lock; the demodulator may
+   * lose a stream that is no TS before it tells it: then the one the mux
+   * has from an earlier lock (the frames of the GSE mux tell what it is) */
+  else if (locked && no_tables && lfe->lfe_supports_bbframes) {
+    int matype = lfe->lfe_matype >= 0 ? lfe->lfe_matype : ((dvb_mux_t *)mm)->lm_matype;
+    if (matype >= 0 && (matype & 0x20) && (matype >> 6) != 3)
+      found = became_gse = isi_probe_single(mm, matype);
+  }
 
   free(ctx);
 
-  /* every scan of a DVB-S2 mux ends here: the log gets the ones that made muxes */
-  if (found > 0)
+  /* every scan of a DVB-S2 mux ends here: the log gets the ones that made
+   * muxes (a mux that became a GSE mux was told above) */
+  if (found > 0 && !became_gse)
     tvhinfo(LS_MPEGTS, "mux %s: ISI probe complete, created %d mux(es) from %d ISI(s)",
             mm->mm_nicename, found, isi_count);
-  else
+  else if (!became_gse)
     tvhdebug(LS_MPEGTS, "mux %s: ISI probe complete, created %d mux(es) from %d ISI(s)",
              mm->mm_nicename, found, isi_count);
 

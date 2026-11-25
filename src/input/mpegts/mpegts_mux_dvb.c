@@ -1694,11 +1694,20 @@ const idclass_t dvb_mux_dab_class =
 
 /*
  * Sub-muxes are carried in a PID of a transponder (T2MI, DAB), or in the
- * BBFrames of a multistream transponder (its input streams), and have its
- * tuning. They keep the uuid of the transponder and follow its tuning when
- * it changes (NIT, the user): at its save, and when they start.
+ * BBFrames of a multistream transponder (its input streams) or of a
+ * transponder with a single GSE stream (the DAB ensembles in it), and have
+ * its tuning. They keep the uuid of the transponder and follow its tuning
+ * when it changes (NIT, the user): at its save, and when they start.
  * All with global_lock.
  */
+
+/* a transponder tuned for its BBFrames: a multistream one (its input
+ * streams), or one whose single input stream is GSE (the GSE mux itself) */
+static int
+dvb_mux_delivers_bbframes ( const dvb_mux_t *p )
+{
+  return p->lm_multistream || mpegts_mux_gse_transponder((const mpegts_mux_t *)p);
+}
 
 /* the same frequency (and polarisation) */
 static int
@@ -1732,9 +1741,9 @@ dvb_mux_stream_pid ( mpegts_mux_t *mm )
 }
 
 /* a mux that can carry the sub-mux: a multistream transponder for an input
- * stream, the transponder with the same input stream for a PID - an enabled
- * one (not a disabled duplicate, nor another description of the transponder
- * set to ignore) */
+ * stream (or the GSE one for DAB in its single stream), the transponder with
+ * the same input stream for a PID - an enabled one (not a disabled duplicate,
+ * nor another description of the transponder set to ignore) */
 static int
 dvb_mux_can_carry ( const dvb_mux_t *p, const dvb_mux_t *sm )
 {
@@ -1744,8 +1753,10 @@ dvb_mux_can_carry ( const dvb_mux_t *p, const dvb_mux_t *sm )
       ((const mpegts_mux_t *)p)->mm_enabled != MM_ENABLE)
     return 0;
   if (mpegts_mux_in_bbframes(mm))
-    return p->lm_multistream && dvb_mux_same_frequency(&p->lm_tuning, &sm->lm_tuning);
-  return !p->lm_multistream && dvb_mux_same_transponder(&p->lm_tuning, &sm->lm_tuning);
+    return dvb_mux_delivers_bbframes(p) &&
+           dvb_mux_same_frequency(&p->lm_tuning, &sm->lm_tuning);
+  return !dvb_mux_delivers_bbframes(p) &&
+         dvb_mux_same_transponder(&p->lm_tuning, &sm->lm_tuning);
 }
 
 void
@@ -1979,13 +1990,16 @@ dvb_mux_submux_parent ( dvb_mux_t *sm )
   mpegts_mux_t *mm = (mpegts_mux_t *)sm;
   mpegts_mux_t *p;
 
+  /* a transponder (also the GSE one) is carried in nothing */
+  if (!mpegts_mux_is_submux(mm))
+    return NULL;
   if (sm->lm_parent) {
     p = mpegts_mux_find(sm->lm_parent);
     if (p != NULL && p != mm && p->mm_network == mm->mm_network &&
         idnode_is_instance(&p->mm_id, &dvb_mux_class) &&
         (mpegts_mux_is_submux(p) ?
            mpegts_mux_in_pid(mm) && dvb_mux_pid_carrier_ok(p) :
-           !mpegts_mux_in_bbframes(mm) || ((dvb_mux_t *)p)->lm_multistream))
+           !mpegts_mux_in_bbframes(mm) || dvb_mux_delivers_bbframes((dvb_mux_t *)p)))
       return (dvb_mux_t *)p;
   }
   /* not while the muxes of the network are loaded: the transponder may
@@ -2547,6 +2561,9 @@ dvb_mux_create0
  * a stream, made if there is none. A transponder is a multistream one with an
  * input stream that is not TS (GSE), or with two TS streams at least - one
  * stream set by hand for a single stream transponder stays a mux of its own.
+ * A transponder whose single input stream is GSE is no multistream one: its
+ * mux is the GSE mux itself (the ISI probe makes it one), without a stream
+ * number, and the DAB ensembles in the stream are its sub-muxes.
  */
 
 /* a mux of an input stream, not yet in a multistream transponder */
@@ -2700,6 +2717,11 @@ dvb_mux_add_stream
     *err = "the mux is carried in a PID, it has no input streams";
     return NULL;
   }
+  if (mpegts_mux_gse_transponder(mm)) {
+    *err = "the mux is the single GSE stream of its transponder, it has "
+           "no input streams";
+    return NULL;
+  }
   if (mpegts_mux_is_submux(mm)) {
     if ((t = dvb_mux_submux_parent(lm)) == NULL) {
       *err = "the transponder of the mux is not found";
@@ -2788,7 +2810,8 @@ dvb_mux_add_stream
  * its tables were read) are those of its input streams. The ones without
  * a channel go, the others stay until their channel has the service of
  * the input stream; the provider network name goes too (global_lock,
- * after the channels are loaded).
+ * after the channels are loaded). The same for a transponder that became
+ * a GSE mux (its single stream is no TS any more).
  */
 void
 dvb_mux_transponder_drop_services ( dvb_mux_t *lm )
@@ -2797,22 +2820,24 @@ dvb_mux_transponder_drop_services ( dvb_mux_t *lm )
   mpegts_service_t *s, *n;
   int dropped = 0, kept = 0;
 
-  if (!lm->lm_multistream)
+  if (!dvb_mux_delivers_bbframes(lm))
     return;
   for (s = LIST_FIRST(&mm->mm_services); s; s = n) {
     n = LIST_NEXT(s, s_dvb_mux_link);
     if (LIST_FIRST(&s->s_channels)) {
       if (kept++ == 0)
-        tvhwarn(LS_MPEGTS, "%s - service %s is mapped to a channel: map the one of "
-                "the input stream instead", mm->mm_nicename, s->s_dvb_svcname ?: "?");
+        tvhwarn(LS_MPEGTS, "%s - service %s is mapped to a channel: %s", mm->mm_nicename,
+                s->s_dvb_svcname ?: "?", lm->lm_multistream ?
+                "map the one of the input stream instead" : "the mux has no TS any more");
       continue;
     }
     service_destroy((service_t *)s, 1);
     dropped++;
   }
   if (dropped || kept)
-    tvhinfo(LS_MPEGTS, "%s - multistream transponder: %d service(s) removed, %d kept "
-            "(mapped)", mm->mm_nicename, dropped, kept);
+    tvhinfo(LS_MPEGTS, "%s - %s: %d service(s) removed, %d kept (mapped)",
+            mm->mm_nicename, lm->lm_multistream ? "multistream transponder" : "GSE mux",
+            dropped, kept);
   /* the provider network name from that stream's NIT goes with them */
   if (mm->mm_provider_network_name) {
     free(mm->mm_provider_network_name);
@@ -2950,11 +2975,12 @@ dvb_mux_dab_pmt_pids ( mpegts_mux_t *mm, const uint16_t *pids, int n, uint16_t s
   }
 }
 
-/* a multistream transponder has no EPG of its own */
+/* a multistream transponder has no EPG of its own, a GSE stream no tables */
 static int
 dvb_mux_is_epg ( mpegts_mux_t *mm )
 {
-  return ((dvb_mux_t *)mm)->lm_multistream ? MM_EPG_DISABLE : mm->mm_epg;
+  return ((dvb_mux_t *)mm)->lm_multistream || mm->mm_type == MM_TYPE_GSE ?
+         MM_EPG_DISABLE : mm->mm_epg;
 }
 
 void

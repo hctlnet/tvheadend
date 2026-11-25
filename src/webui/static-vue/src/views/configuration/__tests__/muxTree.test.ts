@@ -112,6 +112,15 @@ describe('buildMuxTree', () => {
     expect(labels(tree[0].children)).toEqual(['ISI 172 Riks'])
   })
 
+  it('shows a transponder whose single stream is GSE among the others, by its name', () => {
+    const tree = buildMuxTree([
+      { uuid: 'a', name: '11541.1V' },
+      { uuid: 'g', name: '11520.8H', tstype: MUX_TYPE_GSE, stream_id: -1 },
+      { uuid: 'b', name: '11517.546V', multistream: true },
+    ])
+    expect(labels(tree)).toEqual(['11517.546V', '11520.8H', '11541.1V'])
+  })
+
   it('keeps a sub-mux whose transponder is missing at the top, marked', () => {
     const tree = buildMuxTree([{ uuid: 's', name: '12226V ISI 14', parent_mux: 'gone', tstype: MUX_TYPE_ISI, stream_id: 14 }])
     expect(labels(tree)).toEqual(['12226V ISI 14'])

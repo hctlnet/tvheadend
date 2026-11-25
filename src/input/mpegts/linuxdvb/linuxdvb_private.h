@@ -176,6 +176,7 @@ struct linuxdvb_frontend
   int64_t                   lfe_card_id;            /* card_mac_address: the same for the demods of a card */
   int                       lfe_bbframes;           /* tuned so: the PID filters read them */
   int64_t                   lfe_stream_info;        /* mclk() of the next MATYPE/MODCOD read */
+  int                       lfe_matype;             /* the MATYPE read at this tune, -1: none (yet, or tuned for BBFrames) */
 
   /*
    * Virtual frontend RF input binding (for multi-RF-input adapters)

@@ -934,6 +934,25 @@ mpegts_mux_is_epg ( mpegts_mux_t *mm )
   return mm->mm_epg;
 }
 
+/*
+ * A transponder whose single input stream is no TS (GSE): the GSE mux is the
+ * mux of the transponder itself, without a stream number - the GSE stream of
+ * a multistream transponder is a sub-mux of it and has its ISI. A tuner that
+ * delivers BBFrames takes it as it is.
+ */
+int
+mpegts_mux_gse_transponder ( const mpegts_mux_t *mm )
+{
+#if ENABLE_MPEGTS_DVB
+  extern const idclass_t dvb_mux_class;
+  return mm->mm_type == MM_TYPE_GSE &&
+         idnode_is_instance((idnode_t *)&mm->mm_id, &dvb_mux_class) &&
+         ((const dvb_mux_t *)mm)->lm_tuning.dmc_fe_stream_id == DVB_NO_STREAM_ID_FILTER;
+#else
+  return 0;
+#endif
+}
+
 int
 mpegts_mux_has_own_ts ( mpegts_mux_t *mm )
 {

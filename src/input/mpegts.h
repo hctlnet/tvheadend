@@ -433,13 +433,18 @@ enum mpegts_mux_type
 
 /* a mux carried inside another one: in a PID of its transponder (DAB), or
  * in the BBFrames of a multistream transponder (an input stream: TS, GSE,
- * DAB in GSE) */
+ * DAB in GSE) or of a transponder whose single input stream is GSE (DAB in
+ * GSE). That transponder itself is a GSE mux and no sub-mux
+ * (mpegts_mux_gse_transponder()). */
+struct mpegts_mux;
+int mpegts_mux_gse_transponder ( const struct mpegts_mux *mm );
 #define mpegts_mux_in_pid(mm) \
   ((mm)->mm_type == MM_TYPE_T2MI || (mm)->mm_type == MM_TYPE_DAB_MPE || \
    (mm)->mm_type == MM_TYPE_DAB_ETI || (mm)->mm_type == MM_TYPE_DAB_TSNI)
 #define mpegts_mux_in_bbframes(mm) \
-  ((mm)->mm_type == MM_TYPE_ISI || (mm)->mm_type == MM_TYPE_GSE || \
-   (mm)->mm_type == MM_TYPE_DAB_GSE)
+  ((mm)->mm_type == MM_TYPE_ISI || (mm)->mm_type == MM_TYPE_DAB_GSE || \
+   ((mm)->mm_type == MM_TYPE_GSE && \
+    !mpegts_mux_gse_transponder((const struct mpegts_mux *)(mm))))
 #define mpegts_mux_is_submux(mm) \
   (mpegts_mux_in_pid(mm) || mpegts_mux_in_bbframes(mm))
 
@@ -1335,11 +1340,11 @@ htsmsg_t *mpegts_network_scan_pidstats_end ( mpegts_mux_t *mm, int summary );
  */
 #if ENABLE_LINUXDVB
 void mpegts_isi_probe_start(mpegts_mux_t *mm);
-int  mpegts_isi_probe_complete(mpegts_mux_t *mm, int evaluate);
+int  mpegts_isi_probe_complete(mpegts_mux_t *mm, int evaluate, int no_tables);
 int  mpegts_isi_probe_is_done(mpegts_mux_t *mm);
 #else
 static inline void mpegts_isi_probe_start(mpegts_mux_t *mm) { }
-static inline int  mpegts_isi_probe_complete(mpegts_mux_t *mm, int evaluate) { return 0; }
+static inline int  mpegts_isi_probe_complete(mpegts_mux_t *mm, int evaluate, int no_tables) { return 0; }
 static inline int  mpegts_isi_probe_is_done(mpegts_mux_t *mm) { return 1; }
 #endif
 
