@@ -758,6 +758,116 @@ linuxdvb_frontend_rf_input_in_setup ( linuxdvb_frontend_t *master )
 }
 #endif
 
+/* a tuner on the RF input of the master tuner: the master or one of its
+ * slaves */
+static int
+linuxdvb_frontend_on_rf_input
+  ( linuxdvb_frontend_t *master, const char *master_uuid, linuxdvb_frontend_t *lfe )
+{
+  return lfe == master || (lfe->lfe_master && !strcmp(lfe->lfe_master, master_uuid));
+}
+
+/* the weight of what uses the RF input of the master tuner (the master and
+ * its slaves); a tuner being set up is not to be taken (INT_MAX) */
+static int
+linuxdvb_frontend_rf_input_weight
+  ( linuxdvb_frontend_t *master, mpegts_mux_t *mm, int flags, int weight )
+{
+  tvh_hardware_t *th;
+  linuxdvb_adapter_t *la;
+  linuxdvb_frontend_t *lfe2;
+  char ubuf[UUID_HEX_SIZE];
+  int w = 0;
+
+  idnode_uuid_as_str(&master->ti_id, ubuf);
+  LIST_FOREACH(th, &tvh_hardware, th_link) {
+    if (!idnode_is_instance(&th->th_id, &linuxdvb_adapter_class)) continue;
+    la = (linuxdvb_adapter_t*)th;
+    LIST_FOREACH(lfe2, &la->la_frontends, lfe_link) {
+      if (!linuxdvb_frontend_on_rf_input(master, ubuf, lfe2))
+        continue;
+      if (lfe2->lfe_in_setup)
+        return INT_MAX;
+      w = MAX(w, mpegts_input_get_weight((mpegts_input_t *)lfe2, mm, flags, weight));
+    }
+  }
+  return w;
+}
+
+/* the muxes running on a tuner of the RF input (their use of it weighs w)
+ * stop: the tuner named taker takes the input for mm */
+static void
+linuxdvb_frontend_rf_input_stop
+  ( linuxdvb_frontend_t *lfe, int w, const char *taker, const mpegts_mux_t *mm, int weight )
+{
+  mpegts_mux_instance_t *mmi = LIST_FIRST(&lfe->mi_mux_active);
+  char buf[256];
+
+  lfe->mi_display_name((mpegts_input_t *)lfe, buf, sizeof(buf));
+  while (mmi != NULL) {
+    tvhinfo(LS_LINUXDVB, "%s - %s (weight %d) stops: %s takes the RF input for %s (weight %d)",
+            buf, mmi->mmi_mux->mm_nicename, w, taker, mm->mm_nicename, weight);
+    mmi->mmi_mux->mm_stop(mmi->mmi_mux, 1, SM_CODE_SUBSCRIPTION_OVERRIDDEN);
+    if (LIST_FIRST(&lfe->mi_mux_active) == mmi)
+      break;
+    mmi = LIST_FIRST(&lfe->mi_mux_active);
+  }
+}
+
+/*
+ * The RF input of tuner lfe (its own with slaves, or its master's) is set up
+ * for another mux than mmi's (another switch position or dish position,
+ * polarisation or band) and tuners use it: a subscription heavier than all
+ * of them takes the input, they stop and lfe sets it up anew. An equal or
+ * lighter one waits (linuxdvb_frontend_is_enabled says so before; here
+ * non-zero). Without this an EPG grab on two tuners of the input kept a user
+ * scan of another position off the input for good: the weight only counted
+ * as long as a single tuner used the input.
+ */
+static int
+linuxdvb_frontend_rf_input_make_room
+  ( linuxdvb_frontend_t *lfe, mpegts_mux_instance_t *mmi, int weight )
+{
+  tvh_hardware_t *th;
+  linuxdvb_adapter_t *la;
+  linuxdvb_frontend_t *master = lfe;
+  linuxdvb_frontend_t *lfe2;
+  char ubuf[UUID_HEX_SIZE];
+  char buf1[256];
+  int w;
+
+  if (lfe->lfe_type != DVB_TYPE_S)
+    return 0;
+  if (lfe->lfe_master)
+    master = (linuxdvb_frontend_t *)idnode_find(lfe->lfe_master, &linuxdvb_frontend_class, NULL);
+  if (master == NULL || master->lfe_type != DVB_TYPE_S || master->lfe_satconf == NULL ||
+      master->lfe_refcount <= 0 ||
+      linuxdvb_satconf_match_mux(master->lfe_satconf, mmi->mmi_mux))
+    return 0;
+  w = linuxdvb_frontend_rf_input_weight(master, mmi->mmi_mux, 0, weight);
+  lfe->mi_display_name((mpegts_input_t *)lfe, buf1, sizeof(buf1));
+  if (w >= weight) {
+    tvhdebug(LS_LINUXDVB, "%s - the RF input is set up for another mux and its use weighs %d, "
+             "not less than %d for %s", buf1, w, weight, mmi->mmi_mux->mm_nicename);
+    return 1;
+  }
+  idnode_uuid_as_str(&master->ti_id, ubuf);
+  LIST_FOREACH(th, &tvh_hardware, th_link) {
+    if (!idnode_is_instance(&th->th_id, &linuxdvb_adapter_class)) continue;
+    la = (linuxdvb_adapter_t*)th;
+    LIST_FOREACH(lfe2, &la->la_frontends, lfe_link) {
+      if (lfe2 != lfe && linuxdvb_frontend_on_rf_input(master, ubuf, lfe2))
+        linuxdvb_frontend_rf_input_stop(lfe2, w, buf1, mmi->mmi_mux, weight);
+    }
+  }
+  if (master->lfe_refcount > 0) {
+    tvhwarn(LS_LINUXDVB, "%s - the RF input did not become free for %s", buf1,
+            mmi->mmi_mux->mm_nicename);
+    return 1;
+  }
+  return 0;
+}
+
 /* how the transponder of a mux comes tells whether this frontend delivers
  * the mux. BBFrames come from a Neumo frontend only (lfe_supports_bbframes
  * is never set without that driver) */
@@ -781,6 +891,35 @@ linuxdvb_frontend_delivers ( const linuxdvb_frontend_t *lfe, mpegts_mux_t *mm )
       (!lfe->lfe_supports_bbframes || !mpegts_mux_gse_transponder(mm)))
     return 0;
   return 1;
+}
+
+/* the tuners of the group of lfe (they share a demodulator): what runs on
+ * them weighs less than this subscription, else it waits */
+static int
+linuxdvb_frontend_group_enabled
+  ( linuxdvb_frontend_t *lfe, mpegts_mux_t *mm, int flags, int weight )
+{
+  linuxdvb_frontend_t *lfe2;
+  int w = -1;
+
+  LIST_FOREACH(lfe2, &lfe->lfe_adapter->la_frontends, lfe_link) {
+    if (lfe2 == lfe || !lfe_group(lfe, lfe2)) continue;
+    w = MAX(w, mpegts_input_get_weight((mpegts_input_t *)lfe2, mm, flags, weight));
+  }
+  return w >= weight ? MI_IS_ENABLED_RETRY : MI_IS_ENABLED_OK;
+}
+
+/* the RF input of the master tuner is set up for another mux than mm: a
+ * subscription heavier than all that use the input takes it
+ * (linuxdvb_frontend_rf_input_make_room), an equal or lighter one waits */
+static int
+linuxdvb_frontend_rf_input_take
+  ( linuxdvb_frontend_t *lfe, linuxdvb_frontend_t *master, mpegts_mux_t *mm,
+    int flags, int weight )
+{
+  if (weight <= linuxdvb_frontend_rf_input_weight(master, mm, flags, weight))
+    return MI_IS_ENABLED_RETRY;
+  return linuxdvb_frontend_group_enabled(lfe, mm, flags, weight);
 }
 
 static int
@@ -847,7 +986,8 @@ linuxdvb_frontend_is_enabled
 #endif
         if (linuxdvb_satconf_match_mux(lfe2->lfe_satconf, mm))
           goto ok;
-        return MI_IS_ENABLED_RETRY;
+        /* the input is set up for another mux */
+        return linuxdvb_frontend_rf_input_take(lfe, lfe2, mm, flags, weight);
       }
       if (lfe2->lfe_master &&
           !strcmp(lfe2->lfe_master, idnode_uuid_as_str(&lfe->ti_id, ubuf)) &&
@@ -861,22 +1001,14 @@ linuxdvb_frontend_is_enabled
 #endif
         if (linuxdvb_satconf_match_mux(lfe->lfe_satconf, mm))
           goto ok;
-        return MI_IS_ENABLED_RETRY;
+        return linuxdvb_frontend_rf_input_take(lfe, lfe, mm, flags, weight);
       }
     }
   }
 
 
 ok:
-  w = -1;
-  LIST_FOREACH(lfe2, &lfe->lfe_adapter->la_frontends, lfe_link) {
-    if (lfe2 == lfe || !lfe_group(lfe, lfe2)) continue;
-    w = MAX(w, mpegts_input_get_weight((mpegts_input_t *)lfe2, mm, flags, weight));
-  }
-  if (w >= weight)
-    return MI_IS_ENABLED_RETRY;
-
-  return MI_IS_ENABLED_OK;
+  return linuxdvb_frontend_group_enabled(lfe, mm, flags, weight);
 }
 
 #if ENABLE_LINUXDVB_NEUMO
@@ -1167,6 +1299,10 @@ linuxdvb_frontend_start_mux
 
   assert(lfe->lfe_in_setup == 0);
 
+  /* the RF input is set up for another mux: what uses it makes room for a
+   * heavier subscription */
+  if (linuxdvb_frontend_rf_input_make_room(lfe, mmi, weight))
+    return SM_CODE_NO_FREE_ADAPTER;
 
   lfe->lfe_refcount++;
   lfe->lfe_in_setup = 1;
